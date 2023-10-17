@@ -1,9 +1,6 @@
-//  Copyright 2021, University of Freiburg, Chair of Algorithms and Data
-//  Structures. Author: Johannes Kalmbach <kalmbacj@cs.uni-freiburg.de>
-
-//
-// Created by johannes on 29.09.21.
-//
+//  Copyright 2021, University of Freiburg,
+//                  Chair of Algorithms and Data Structures.
+//  Author: Johannes Kalmbach <kalmbacj@cs.uni-freiburg.de>
 
 #ifndef QLEVER_LITERALEXPRESSION_H
 #define QLEVER_LITERALEXPRESSION_H
@@ -20,7 +17,7 @@ template <typename T>
 class LiteralExpression : public SparqlExpression {
  public:
   // _________________________________________________________________________
-  LiteralExpression(T _value) : _value{std::move(_value)} {}
+  explicit LiteralExpression(T _value) : _value{std::move(_value)} {}
 
   // A simple getter for the stored value.
   const T& value() const { return _value; }
@@ -28,15 +25,37 @@ class LiteralExpression : public SparqlExpression {
   // Evaluating just returns the constant/literal value.
   ExpressionResult evaluate(
       [[maybe_unused]] EvaluationContext* context) const override {
-    if constexpr (std::is_same_v<string, T>) {
+    // Common code for the `Literal` and `std::string` case.
+    auto getIdOrString = [&context](const std::string& s) -> ExpressionResult {
       Id id;
-      bool idWasFound = context->_qec.getIndex().getId(_value, &id);
+      bool idWasFound = context->_qec.getIndex().getId(s, &id);
       if (!idWasFound) {
         // no vocabulary entry found, just use it as a string constant.
-        // TODO<joka921>:: emit a warning.
-        return _value;
+        return s;
       }
       return id;
+    };
+    if constexpr (std::is_same_v<TripleComponent::Literal, T>) {
+      return getIdOrString(_value.rawContent());
+    } else if constexpr (std::is_same_v<string, T>) {
+      return getIdOrString(_value);
+    } else if constexpr (std::is_same_v<Variable, T>) {
+      // If a variable is grouped, then we know that it always has the same
+      // value and can treat it as a constant. This is not possible however when
+      // we are inside an aggregate, because for example `SUM(?variable)` must
+      // still compute the sum over the whole group.
+      if (context->_groupedVariables.contains(_value) && !isInsideAggregate()) {
+        auto column = context->getColumnIndexForVariable(_value);
+        const auto& table = context->_inputTable;
+        auto constantValue = table.at(context->_beginIndex, column);
+        assert((std::ranges::all_of(
+            table.begin() + context->_beginIndex,
+            table.begin() + context->_endIndex,
+            [&](const auto& row) { return row[column] == constantValue; })));
+        return constantValue;
+      } else {
+        return _value;
+      }
     } else {
       return _value;
     }
@@ -74,6 +93,8 @@ class LiteralExpression : public SparqlExpression {
       return _value;
     } else if constexpr (std::is_same_v<T, ValueId>) {
       return absl::StrCat("#valueId ", _value.getBits(), "#");
+    } else if constexpr (std::is_same_v<T, TripleComponent::Literal>) {
+      return absl::StrCat("#literal: ", _value.rawContent());
     } else {
       return {std::to_string(_value)};
     }
@@ -103,7 +124,9 @@ using BoolExpression = detail::LiteralExpression<bool>;
 using IntExpression = detail::LiteralExpression<int64_t>;
 using DoubleExpression = detail::LiteralExpression<double>;
 using VariableExpression = detail::LiteralExpression<::Variable>;
-using StringOrIriExpression = detail::LiteralExpression<string>;
+using IriExpression = detail::LiteralExpression<string>;
+using StringLiteralExpression =
+    detail::LiteralExpression<TripleComponent::Literal>;
 using IdExpression = detail::LiteralExpression<ValueId>;
 }  // namespace sparqlExpression
 

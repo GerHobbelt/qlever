@@ -12,6 +12,7 @@
 
 #include "./SparqlExpressionTestHelpers.h"
 #include "./util/GTestHelpers.h"
+#include "./util/TripleComponentTestHelpers.h"
 #include "SparqlAntlrParserTestHelpers.h"
 #include "engine/sparqlExpressions/LangExpression.h"
 #include "engine/sparqlExpressions/LiteralExpression.h"
@@ -28,10 +29,14 @@ using Parser = SparqlAutomaticParser;
 using namespace std::literals;
 using Var = Variable;
 
+auto lit = ad_utility::testing::tripleComponentLiteral;
+
 template <auto F>
 auto parse =
-    [](const string& input, SparqlQleverVisitor::PrefixMap prefixes = {}) {
-      ParserAndVisitor p{input, std::move(prefixes)};
+    [](const string& input, SparqlQleverVisitor::PrefixMap prefixes = {},
+       SparqlQleverVisitor::DisableSomeChecksOnlyForTesting disableSomeChecks =
+           SparqlQleverVisitor::DisableSomeChecksOnlyForTesting::False) {
+      ParserAndVisitor p{input, std::move(prefixes), disableSomeChecks};
       return p.parseTypesafe(F);
     };
 
@@ -52,6 +57,8 @@ template <auto Clause,
           typename Value = decltype(parse<Clause>("").resultOfParse_)>
 struct ExpectCompleteParse {
   SparqlQleverVisitor::PrefixMap prefixMap_ = {};
+  SparqlQleverVisitor::DisableSomeChecksOnlyForTesting disableSomeChecks =
+      SparqlQleverVisitor::DisableSomeChecksOnlyForTesting::False;
 
   auto operator()(const string& input, const Value& value,
                   ad_utility::source_location l =
@@ -78,14 +85,20 @@ struct ExpectCompleteParse {
                   SparqlQleverVisitor::PrefixMap prefixMap,
                   ad_utility::source_location l =
                       ad_utility::source_location::current()) const {
-    return expectCompleteParse(parse<Clause>(input, std::move(prefixMap)),
-                               matcher, l);
+    auto tr = generateLocationTrace(l, "succesful parsing was expected here");
+    EXPECT_NO_THROW({
+      return expectCompleteParse(
+          parse<Clause>(input, std::move(prefixMap), disableSomeChecks),
+          matcher, l);
+    });
   };
 };
 
 template <auto Clause, typename Exception = ParseException>
 struct ExpectParseFails {
   SparqlQleverVisitor::PrefixMap prefixMap_ = {};
+  SparqlQleverVisitor::DisableSomeChecksOnlyForTesting disableSomeChecks =
+      SparqlQleverVisitor::DisableSomeChecksOnlyForTesting::False;
 
   auto operator()(
       const string& input,
@@ -97,7 +110,8 @@ struct ExpectParseFails {
       const string& input, SparqlQleverVisitor::PrefixMap prefixMap,
       ad_utility::source_location l = ad_utility::source_location::current()) {
     auto trace = generateLocationTrace(l);
-    EXPECT_THROW(parse<Clause>(input, std::move(prefixMap)), Exception)
+    EXPECT_THROW(parse<Clause>(input, std::move(prefixMap), disableSomeChecks),
+                 Exception)
         << input;
   }
 };
@@ -431,9 +445,10 @@ TEST(SparqlParser, VariableWithDollarSign) {
 }
 
 TEST(SparqlParser, Bind) {
-  auto expectBind = ExpectCompleteParse<&Parser::bind>{};
-  expectBind("BIND (10 - 5 as ?a)", m::Bind(Var{"?a"}, "10-5"));
-  expectBind("bInD (?age - 10 As ?s)", m::Bind(Var{"?s"}, "?age-10"));
+  auto noChecks = SparqlQleverVisitor::DisableSomeChecksOnlyForTesting::True;
+  auto expectBind = ExpectCompleteParse<&Parser::bind>{{}, noChecks};
+  expectBind("BIND (10 - 5 as ?a)", m::Bind(Var{"?a"}, "10 - 5"));
+  expectBind("bInD (?age - 10 As ?s)", m::Bind(Var{"?s"}, "?age - 10"));
 }
 
 TEST(SparqlParser, Integer) {
@@ -478,12 +493,12 @@ TEST(SparqlParser, OrderCondition) {
   expectOrderCondition("ASC (?bar)",
                        m::VariableOrderKeyVariant(Var{"?bar"}, false));
   expectOrderCondition("ASC(?test - 5)",
-                       m::ExpressionOrderKey("(?test-5)", false));
+                       m::ExpressionOrderKey("(?test - 5)", false));
   expectOrderCondition("DESC (10 || (5 && ?foo))",
-                       m::ExpressionOrderKey("(10||(5&&?foo))", true));
+                       m::ExpressionOrderKey("(10 || (5 && ?foo))", true));
   // constraint
   expectOrderCondition("(5 - ?mehr)",
-                       m::ExpressionOrderKey("(5-?mehr)", false));
+                       m::ExpressionOrderKey("(5 - ?mehr)", false));
   expectOrderCondition("SUM(?i)", m::ExpressionOrderKey("SUM(?i)", false));
   expectOrderConditionFails("ASC SCORE(?i)");
 }
@@ -494,7 +509,7 @@ TEST(SparqlParser, OrderClause) {
   expectOrderClause(
       "ORDER BY ?test DESC(?foo - 5)",
       m::OrderKeys({VariableOrderKey{Var{"?test"}, false},
-                    m::ExpressionOrderKeyTest{"(?foo-5)", true}}));
+                    m::ExpressionOrderKeyTest{"(?foo - 5)", true}}));
 
   expectOrderClause("INTERNAL SORT BY ?test",
                     m::OrderKeys({VariableOrderKey{Var{"?test"}, false}},
@@ -516,9 +531,35 @@ TEST(SparqlParser, GroupCondition) {
   expectGroupCondition("COUNT(?test)", m::ExpressionGroupKey("COUNT(?test)"));
   // functionCall
   expectGroupCondition(
-      "<http://www.opengis.net/def/function/geosparql/latitude> (?test)",
+      "<http://www.opengis.net/def/function/geosparql/latitude>(?test)",
       m::ExpressionGroupKey(
           "<http://www.opengis.net/def/function/geosparql/latitude>(?test)"));
+}
+
+TEST(SparqlParser, FunctionCall) {
+  auto expectFunctionCall = ExpectCompleteParse<&Parser::functionCall>{};
+  auto expectFunctionCallFails = ExpectParseFails<&Parser::functionCall>{};
+
+  // Correct function calls. Check that the parser picks the correct expression.
+  expectFunctionCall(
+      "<http://www.opengis.net/def/function/geosparql/latitude>(?a)",
+      m::ExpressionWithType<sparqlExpression::LatitudeExpression>());
+  expectFunctionCall(
+      "<http://www.opengis.net/def/function/geosparql/longitude>(?a)",
+      m::ExpressionWithType<sparqlExpression::LongitudeExpression>());
+  expectFunctionCall(
+      "<http://www.opengis.net/def/function/geosparql/distance>(?a, ?b)",
+      m::ExpressionWithType<sparqlExpression::DistExpression>());
+
+  // Wrong number of arguments.
+  expectFunctionCallFails(
+      "<http://www.opengis.net/def/function/geosparql/distance>(?a)");
+  // Unknown function with the `geof:` prefix.
+  expectFunctionCallFails(
+      "<http://www.opengis.net/def/function/geosparql/notExisting>()");
+  // Prefix for which no function is known.
+  expectFunctionCallFails(
+      "<http://www.no-existing-prefixes.com/notExisting>()");
 }
 
 TEST(SparqlParser, GroupClause) {
@@ -526,7 +567,7 @@ TEST(SparqlParser, GroupClause) {
       parse<&Parser::groupClause>(
           "GROUP BY ?test (?foo - 10 as ?bar) COUNT(?baz)"),
       m::GroupKeys(
-          {Var{"?test"}, std::pair{"?foo-10", Var{"?bar"}}, "COUNT(?baz)"}));
+          {Var{"?test"}, std::pair{"?foo - 10", Var{"?bar"}}, "COUNT(?baz)"}));
 }
 
 TEST(SparqlParser, SolutionModifier) {
@@ -547,16 +588,16 @@ TEST(SparqlParser, SolutionModifier) {
   expectSolutionModifier(
       "GROUP BY ?var (?b - 10) HAVING (?var != 10) ORDER BY ?var LIMIT 10 "
       "OFFSET 2",
-      m::SolutionModifier({Var{"?var"}, "?b-10"}, {{"(?var!=10)"}},
+      m::SolutionModifier({Var{"?var"}, "?b - 10"}, {{"(?var != 10)"}},
                           {VOK{Var{"?var"}, false}}, {10, 1, 2}));
   expectSolutionModifier(
       "GROUP BY ?var HAVING (?foo < ?bar) ORDER BY (5 - ?var) TEXTLIMIT 21 "
       "LIMIT 2",
-      m::SolutionModifier({Var{"?var"}}, {{"(?foo<?bar)"}},
-                          {std::pair{"(5-?var)", false}}, {2, 21, 0}));
+      m::SolutionModifier({Var{"?var"}}, {{"(?foo < ?bar)"}},
+                          {std::pair{"(5 - ?var)", false}}, {2, 21, 0}));
   expectSolutionModifier(
       "GROUP BY (?var - ?bar) ORDER BY (5 - ?var)",
-      m::SolutionModifier({"?var-?bar"}, {}, {std::pair{"(5-?var)", false}},
+      m::SolutionModifier({"?var - ?bar"}, {}, {std::pair{"(5 - ?var)", false}},
                           {}));
 }
 
@@ -564,7 +605,7 @@ TEST(SparqlParser, DataBlock) {
   auto expectDataBlock = ExpectCompleteParse<&Parser::dataBlock>{};
   auto expectDataBlockFails = ExpectParseFails<&Parser::dataBlock>();
   expectDataBlock("?test { \"foo\" }",
-                  m::Values({Var{"?test"}}, {{"\"foo\""}}));
+                  m::Values({Var{"?test"}}, {{lit("\"foo\"")}}));
   expectDataBlock("?test { 10.0 }", m::Values({Var{"?test"}}, {{10.0}}));
   expectDataBlock("?test { UNDEF }",
                   m::Values({Var{"?test"}}, {{TripleComponent::UNDEF{}}}));
@@ -572,8 +613,9 @@ TEST(SparqlParser, DataBlock) {
   // (numericLiteral/booleanLiteral)
   // TODO<joka921/qup42> implement.
   expectDataBlockFails("?test { true }");
-  expectDataBlock(R"(?foo { "baz" "bar" })",
-                  m::Values({Var{"?foo"}}, {{"\"baz\""}, {"\"bar\""}}));
+  expectDataBlock(
+      R"(?foo { "baz" "bar" })",
+      m::Values({Var{"?foo"}}, {{lit("\"baz\"")}, {lit("\"bar\"")}}));
   // TODO: Is this semantics correct?
   expectDataBlock(R"(( ) { ( ) })", m::Values({}, {{}}));
   expectDataBlock(R"(( ) { })", m::Values({}, {}));
@@ -583,13 +625,15 @@ TEST(SparqlParser, DataBlock) {
   expectDataBlockFails(R"(( ?foo ?bar ) { (<foo>) (<bar>) })");
   expectDataBlock(R"(( ?foo ?bar ) { (<foo> <bar>) })",
                   m::Values({Var{"?foo"}, Var{"?bar"}}, {{"<foo>", "<bar>"}}));
-  expectDataBlock(R"(( ?foo ?bar ) { (<foo> "m") ("1" <bar>) })",
-                  m::Values({Var{"?foo"}, Var{"?bar"}},
-                            {{"<foo>", "\"m\""}, {"\"1\"", "<bar>"}}));
   expectDataBlock(
-      R"(( ?foo ?bar ) { (<foo> "m") (<bar> <e>) ("1" "f") })",
+      R"(( ?foo ?bar ) { (<foo> "m") ("1" <bar>) })",
       m::Values({Var{"?foo"}, Var{"?bar"}},
-                {{"<foo>", "\"m\""}, {"<bar>", "<e>"}, {"\"1\"", "\"f\""}}));
+                {{"<foo>", lit("\"m\"")}, {lit("\"1\""), "<bar>"}}));
+  expectDataBlock(
+      R"(( ?foo ?bar ) { (<foo> "m") (<bar> <e>) (1 "f") })",
+      m::Values(
+          {Var{"?foo"}, Var{"?bar"}},
+          {{"<foo>", lit("\"m\"")}, {"<bar>", "<e>"}, {1, lit("\"f\"")}}));
   // TODO<joka921/qup42> implement
   expectDataBlockFails(R"(( ) { (<foo>) })");
 }
@@ -598,7 +642,7 @@ TEST(SparqlParser, InlineData) {
   auto expectInlineData = ExpectCompleteParse<&Parser::inlineData>{};
   auto expectInlineDataFails = ExpectParseFails<&Parser::inlineData>();
   expectInlineData("VALUES ?test { \"foo\" }",
-                   m::InlineData({Var{"?test"}}, {{"\"foo\""}}));
+                   m::InlineData({Var{"?test"}}, {{lit("\"foo\"")}}));
   // There must always be a block present for InlineData
   expectInlineDataFails("");
 }
@@ -719,7 +763,7 @@ TEST(SparqlParser, triplesSameSubjectPath) {
   expectTriples(
       "<foo> <QLever-internal-function/contains-word> \"Berlin Freiburg\"",
       {{Iri("<foo>"), PathIri("<QLever-internal-function/contains-word>"),
-        Literal("berlin freiburg")}});
+        Literal("\"Berlin Freiburg\"")}});
 }
 
 TEST(SparqlParser, SelectClause) {
@@ -745,10 +789,10 @@ TEST(SparqlParser, SelectClause) {
   expectSelectClause("SELECT (10 as ?foo) ?bar",
                      m::Select({Alias{"10", Var{"?foo"}}, Var{"?bar"}}));
   expectSelectClause("SELECT DISTINCT (5 - 10 as ?m)",
-                     m::Select({Alias{"5-10", Var{"?m"}}}, true, false));
+                     m::Select({Alias{"5 - 10", Var{"?m"}}}, true, false));
   expectSelectClause(
       "SELECT (5 - 10 as ?m) ?foo (10 as ?bar)",
-      m::Select({Alias{"5-10", "?m"}, Var{"?foo"}, Alias{"10", "?bar"}}));
+      m::Select({Alias{"5 - 10", "?m"}, Var{"?foo"}, Alias{"10", "?bar"}}));
 }
 
 TEST(SparqlParser, HavingCondition) {
@@ -756,11 +800,11 @@ TEST(SparqlParser, HavingCondition) {
   auto expectHavingConditionFails =
       ExpectParseFails<&Parser::havingCondition>();
 
-  expectHavingCondition("(?x <= 42.3)", m::stringMatchesFilter("(?x<=42.3)"));
+  expectHavingCondition("(?x <= 42.3)", m::stringMatchesFilter("(?x <= 42.3)"));
   expectHavingCondition("(?height > 1.7)",
-                        m::stringMatchesFilter("(?height>1.7)"));
+                        m::stringMatchesFilter("(?height > 1.7)"));
   expectHavingCondition("(?predicate < \"<Z\")",
-                        m::stringMatchesFilter("(?predicate<\"<Z\")"));
+                        m::stringMatchesFilter("(?predicate < \"<Z\")"));
   expectHavingConditionFails("(LANG(?x) = \"en\")");
 }
 
@@ -768,7 +812,7 @@ TEST(SparqlParser, GroupGraphPattern) {
   auto expectGraphPattern = ExpectCompleteParse<&Parser::groupGraphPattern>{
       {{INTERNAL_PREDICATE_PREFIX_NAME, INTERNAL_PREDICATE_PREFIX_IRI}}};
   auto expectGroupGraphPatternFails =
-      ExpectParseFails<&Parser::groupGraphPattern>();
+      ExpectParseFails<&Parser::groupGraphPattern>{{}};
   auto DummyTriplesMatcher = m::Triples({{Var{"?x"}, "?y", Var{"?z"}}});
 
   // Empty GraphPatterns are not supported.
@@ -796,10 +840,13 @@ TEST(SparqlParser, GroupGraphPattern) {
   expectGraphPattern("{ MINUS { ?a <foo> <bar> } }",
                      m::GraphPattern(m::MinusGraphPattern(
                          m::Triples({{Var{"?a"}, "<foo>", "<bar>"}}))));
-  expectGraphPattern("{ FILTER (?a = 10) . ?x ?y ?z }",
-                     m::GraphPattern(false, {"(?a=10)"}, DummyTriplesMatcher));
-  expectGraphPattern("{ BIND (?f - ?b as ?c) }",
-                     m::GraphPattern(m::Bind(Var{"?c"}, "?f-?b")));
+  expectGraphPattern(
+      "{ FILTER (?a = 10) . ?x ?y ?z }",
+      m::GraphPattern(false, {"(?a = 10)"}, DummyTriplesMatcher));
+  expectGraphPattern("{ BIND (3 as ?c) }",
+                     m::GraphPattern(m::Bind(Var{"?c"}, "3")));
+  // The variables `?f` and `?b` have not been used before the BIND clause.
+  expectGroupGraphPatternFails("{ BIND (?f - ?b as ?c) }");
   expectGraphPattern(
       "{ VALUES (?a ?b) { (<foo> <bar>) (<a> <b>) } }",
       m::GraphPattern(m::InlineData({Var{"?a"}, Var{"?b"}},
@@ -819,27 +866,49 @@ TEST(SparqlParser, GroupGraphPattern) {
   expectGraphPattern(
       "{ ?x <is-a> <Actor> . FILTER(?x != ?y) . ?y <is-a> <Actor> . "
       "FILTER(?y < ?x) }",
-      m::GraphPattern(false, {"(?x!=?y)", "(?y<?x)"},
+      m::GraphPattern(false, {"(?x != ?y)", "(?y < ?x)"},
                       m::Triples({{Var{"?x"}, "<is-a>", "<Actor>"},
                                   {Var{"?y"}, "<is-a>", "<Actor>"}})));
   expectGraphPattern(
       "{?x <is-a> <Actor> . FILTER(?x != ?y) . ?y <is-a> <Actor> . ?c "
       "ql:contains-entity ?x . ?c ql:contains-word \"coca* abuse\"}",
       m::GraphPattern(
-          false, {"(?x!=?y)"},
-          m::Triples({{Var{"?x"}, "<is-a>", "<Actor>"},
-                      {Var{"?y"}, "<is-a>", "<Actor>"},
-                      {Var{"?c"}, CONTAINS_ENTITY_PREDICATE, Var{"?x"}},
-                      {Var{"?c"}, CONTAINS_WORD_PREDICATE, "coca* abuse"}})));
+          false, {"(?x != ?y)"},
+          m::Triples(
+              {{Var{"?x"}, "<is-a>", "<Actor>"},
+               {Var{"?y"}, "<is-a>", "<Actor>"},
+               {Var{"?c"}, CONTAINS_ENTITY_PREDICATE, Var{"?x"}},
+               {Var{"?c"}, CONTAINS_WORD_PREDICATE, lit("\"coca* abuse\"")}})));
+
+  // Scoping of variables in combination with a BIND clause.
   expectGraphPattern(
-      "{?x <is-a> <Actor> . BIND(10 - ?foo as ?y) }",
+      "{?x <is-a> <Actor> . BIND(10 - ?x as ?y) }",
       m::GraphPattern(m::Triples({{Var{"?x"}, "<is-a>", "<Actor>"}}),
-                      m::Bind(Var{"?y"}, "10-?foo")));
+                      m::Bind(Var{"?y"}, "10 - ?x")));
   expectGraphPattern(
-      "{?x <is-a> <Actor> . BIND(10 - ?foo as ?y) . ?a ?b ?c }",
+      "{?x <is-a> <Actor> . BIND(10 - ?x as ?y) . ?a ?b ?c }",
       m::GraphPattern(m::Triples({{Var{"?x"}, "<is-a>", "<Actor>"}}),
-                      m::Bind(Var{"?y"}, "10-?foo"),
+                      m::Bind(Var{"?y"}, "10 - ?x"),
                       m::Triples({{Var{"?a"}, "?b", Var{"?c"}}})));
+  expectGroupGraphPatternFails("{?x <is-a> <Actor> . {BIND(10 - ?x as ?y)}}");
+  expectGroupGraphPatternFails("{?x <is-a> <Actor> . BIND(3 as ?x)}");
+  expectGraphPattern(
+      "{?x <is-a> <Actor> . {BIND(3 as ?x)} }",
+      m::GraphPattern(m::Triples({{Var{"?x"}, "<is-a>", "<Actor>"}}),
+                      m::GroupGraphPattern(m::Bind(Var{"?x"}, "3"))));
+  expectGroupGraphPatternFails(
+      "{?x <is-a> <Actor> . OPTIONAL {BIND(?x as ?y)}}");
+
+  expectGraphPattern(
+      "{?x <is-a> <Actor> . OPTIONAL {BIND(3 as ?x)} }",
+      m::GraphPattern(m::Triples({{Var{"?x"}, "<is-a>", "<Actor>"}}),
+                      m::OptionalGraphPattern(m::Bind(Var{"?x"}, "3"))));
+  expectGraphPattern(
+      "{ {?x <is-a> <Actor>} UNION { BIND (3 as ?x)}}",
+      m::GraphPattern(m::Union(
+          m::GraphPattern(m::Triples({{Var{"?x"}, "<is-a>", "<Actor>"}})),
+          m::GraphPattern(m::Bind(Var{"?x"}, "3")))));
+
   expectGraphPattern(
       "{?x <is-a> <Actor> . OPTIONAL { ?x <foo> <bar> } }",
       m::GraphPattern(m::Triples({{Var{"?x"}, "<is-a>", "<Actor>"}}),
@@ -899,6 +968,28 @@ TEST(SparqlParser, SelectQuery) {
   expectSelectQuery("SELECT * WHERE { ?x ?y ?z }",
                     testing::AllOf(m::SelectQuery(m::AsteriskSelect(),
                                                   DummyGraphPatternMatcher)));
+  expectSelectQuery(
+      "SELECT ?x WHERE { ?x ?y ?z . FILTER(?x != <foo>) } LIMIT 10 TEXTLIMIT 5",
+      testing::AllOf(
+          m::SelectQuery(
+              m::Select({Var{"?x"}}),
+              m::GraphPattern(false, {"(?x != <foo>)"},
+                              m::Triples({{Var{"?x"}, "?y", Var{"?z"}}}))),
+          m::pq::LimitOffset({10, 5})));
+
+  // ORDER BY
+  expectSelectQuery(
+      "SELECT ?x WHERE { ?x ?y ?z } HAVING (?x > 5) ORDER BY ?y ",
+      testing::AllOf(
+          m::SelectQuery(m::Select({Var{"?x"}}), DummyGraphPatternMatcher),
+          m::pq::Having({"(?x > 5)"}), m::pq::OrderKeys({{Var{"?y"}, false}})));
+
+  // Ordering by a variable or expression which contains a variable that is not
+  // visible in the query body is not allowed.
+  expectSelectQueryFails("SELECT ?a WHERE { ?a ?b ?c } ORDER BY ?x");
+  expectSelectQueryFails("SELECT ?a WHERE { ?a ?b ?c } ORDER BY (?x - 10)");
+
+  // Explicit GROUP BY
   expectSelectQuery("SELECT ?x WHERE { ?x ?y ?z } GROUP BY ?x",
                     testing::AllOf(m::SelectQuery(m::VariablesSelect({"?x"}),
                                                   DummyGraphPatternMatcher),
@@ -909,40 +1000,82 @@ TEST(SparqlParser, SelectQuery) {
           m::SelectQuery(m::Select({std::pair{"COUNT(?y)", Var{"?a"}}}),
                          DummyGraphPatternMatcher),
           m::pq::GroupKeys({Var{"?x"}})));
+
   expectSelectQuery(
-      "SELECT ?x WHERE { ?x ?y ?z . FILTER(?x != <foo>) } LIMIT 10 TEXTLIMIT 5",
+      "SELECT (SUM(?x) as ?a) (COUNT(?y) + ?z AS ?b)  WHERE { ?x ?y ?z } GROUP "
+      "BY ?z",
       testing::AllOf(
-          m::SelectQuery(
-              m::Select({Var{"?x"}}),
-              m::GraphPattern(false, {"(?x!=<foo>)"},
-                              m::Triples({{Var{"?x"}, "?y", Var{"?z"}}}))),
-          m::pq::LimitOffset({10, 5})));
-  expectSelectQuery(
-      "SELECT ?x WHERE { ?x ?y ?z } HAVING (?x > 5) ORDER BY ?y ",
-      testing::AllOf(
-          m::SelectQuery(m::Select({Var{"?x"}}), DummyGraphPatternMatcher),
-          m::pq::Having({"(?x>5)"}), m::pq::OrderKeys({{Var{"?y"}, false}})));
+          m::SelectQuery(m::Select({std::pair{"SUM(?x)", Var{"?a"}},
+                                    std::pair{"COUNT(?y) + ?z", Var{"?b"}}}),
+                         DummyGraphPatternMatcher)));
+
+  // It is also illegal to reuse a variable from the body of a query with a
+  // GROUP BY as the target of an alias, even if it is the aggregated variable
+  // itself.
+  expectSelectQueryFails(
+      "SELECT (SUM(?y) AS ?y) WHERE { ?x <is-a> ?y } GROUP BY ?x");
 
   // Grouping by a variable or expression which contains a variable
   // that is not visible in the query body is not allowed.
   expectSelectQueryFails("SELECT ?x WHERE { ?a ?b ?c } GROUP BY ?x");
   expectSelectQueryFails(
       "SELECT (COUNT(?a) as ?d) WHERE { ?a ?b ?c } GROUP BY (?x - 10)");
-  // Ordering by a variable or expression which contains a variable that is not
-  // visible in the query body is not allowed.
-  expectSelectQueryFails("SELECT ?a WHERE { ?a ?b ?c } ORDER BY ?x");
-  expectSelectQueryFails("SELECT ?a WHERE { ?a ?b ?c } ORDER BY (?x - 10)");
+
   // All variables used in an aggregate must be visible in the query body.
   expectSelectQueryFails(
       "SELECT (COUNT(?x) as ?y) WHERE { ?a ?b ?c } GROUP BY ?a");
   // `SELECT *` is not allowed while grouping.
   expectSelectQueryFails("SELECT * WHERE { ?x ?y ?z } GROUP BY ?x");
-  // `?x` is selected twice. Once as variable and once as the result of an
-  // alias. This is not allowed.
-  expectSelectQueryFails("SELECT ?x (?y as ?x) WHERE { ?x ?y ?z }");
   // When grouping selected variables must either be grouped by or aggregated.
   // `?y` is neither.
   expectSelectQueryFails("SELECT (?y as ?a) WHERE { ?x ?y ?z } GROUP BY ?x");
+
+  // Explicit GROUP BY but the target of an alias is used twice.
+  expectSelectQueryFails(
+      "SELECT (?x AS ?z) (?x AS ?z) WHERE { ?x <p> ?y} GROUP BY ?x");
+
+  // Explicit GROUP BY but the second alias uses the target of the first alias
+  // as input.
+  // TODO<joka921> This is actually allowed by the SPARQL standard, but
+  // currently not yet supported by QLever. Implement this (for details see the
+  // comment in `ParsedQuery::addSolutionModifiers`.
+  expectSelectQueryFails(
+      "SELECT (?x AS ?z) (?z AS ?zz) WHERE { ?x <p> ?y} GROUP BY ?x");
+
+  // Implicit GROUP BY.
+  expectSelectQuery(
+      "SELECT (SUM(?x) as ?a) (COUNT(?y) + AVG(?z) AS ?b)  WHERE { ?x ?y ?z }",
+      testing::AllOf(m::SelectQuery(m::Select({std::pair{"SUM(?x)", Var{"?a"}},
+                                               std::pair{"COUNT(?y) + AVG(?z)",
+                                                         Var{"?b"}}}),
+                                    DummyGraphPatternMatcher),
+                     m::pq::GroupKeys({})));
+  // Implicit GROUP BY but the variable `?x` is not aggregated.
+  expectSelectQueryFails("SELECT ?x (SUM(?y) AS ?z) WHERE { ?x <p> ?y}");
+  // Implicit GROUP BY but the variable `?x` is not aggregated inside the
+  // expression that also contains the aggregate.
+  expectSelectQueryFails("SELECT (?x + SUM(?y) AS ?z) WHERE { ?x <p> ?y}");
+
+  // When there is no GROUP BY (implicit or explicit), the aliases are
+  // equivalently transformed into BINDs and then deleted from the SELECT
+  // clause.
+  expectSelectQuery("SELECT (?x AS ?y) (?y AS ?z) WHERE { BIND(1 AS ?x)}",
+                    m::SelectQuery(m::Select({Var("?y"), Var("?z")}),
+                                   m::GraphPattern(m::Bind(Var("?x"), "1"),
+                                                   m::Bind(Var("?y"), "?x"),
+                                                   m::Bind(Var{"?z"}, "?y"))));
+
+  // No GROUP BY but the target of an alias is used twice.
+  expectSelectQueryFails("SELECT (?x AS ?z) (?x AS ?z) WHERE { ?x <p> ?y}");
+
+  // `?x` is selected twice. Once as variable and once as the result of an
+  // alias. This is not allowed.
+  expectSelectQueryFails("SELECT ?x (?y as ?x) WHERE { ?x ?y ?z }");
+
+  // The target of the alias (`?y`) is already bound in the WHERE clause. This
+  // is forbidden by the SPARQL standard.
+  expectSelectQueryFails("SELECT (?x AS ?y) WHERE { ?x <is-a> ?y }");
+
   // Datasets are not supported.
   expectSelectQueryFails("SELECT * FROM  WHERE <foo> { ?x ?y ?z }");
 }
@@ -966,7 +1099,7 @@ TEST(SparqlParser, ConstructQuery) {
       m::ConstructQuery(
           {{Var{"?a"}, Iri{"<foo>"}, Var{"?c"}},
            {Iri{"<bar>"}, Var{"?b"}, Iri{"<baz>"}}},
-          m::GraphPattern(false, {"(?a>0)"},
+          m::GraphPattern(false, {"(?a > 0)"},
                           m::Triples({{Var{"?a"}, "?b", Var{"?c"}}}))));
   expectConstructQuery(
       "CONSTRUCT { ?a <foo> ?c . } WHERE { ?a ?b ?c } ORDER BY ?a LIMIT 10",
@@ -1022,6 +1155,20 @@ TEST(SparqlParser, Query) {
               "CONSTRUCT { ?x <foo> <bar> } WHERE { ?x ?y ?z } LIMIT 10"),
           m::pq::LimitOffset({10}),
           m::VisibleVariables({Var{"?x"}, Var{"?y"}, Var{"?z"}})));
+
+  // Construct query with GROUP BY
+  expectQuery(
+      "CONSTRUCT { ?x <foo> <bar> } WHERE { ?x ?y ?z } GROUP BY ?x",
+      testing::AllOf(
+          m::ConstructQuery(
+              {{Var{"?x"}, Iri{"<foo>"}, Iri{"<bar>"}}},
+              m::GraphPattern(m::Triples({{Var{"?x"}, "?y", Var{"?z"}}}))),
+          m::pq::OriginalString(
+              "CONSTRUCT { ?x <foo> <bar> } WHERE { ?x ?y ?z } GROUP BY ?x"),
+          m::VisibleVariables({Var{"?x"}, Var{"?y"}, Var{"?z"}})));
+  // Construct query with GROUP BY, but a variable that is not grouped is used.
+  expectQueryFails(
+      "CONSTRUCT { ?x <foo> <bar> } WHERE { ?x ?y ?z } GROUP BY ?y");
 
   // Test that the prologue is parsed properly. We use `m::Service` here
   // because the parsing of a SERVICE clause is the only place where the

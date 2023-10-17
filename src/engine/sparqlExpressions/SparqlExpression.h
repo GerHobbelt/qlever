@@ -32,6 +32,7 @@ namespace sparqlExpression {
 class SparqlExpression {
  private:
   std::string _descriptor;
+  bool isInsideAggregate_ = false;
 
  public:
   /// ________________________________________________________________________
@@ -71,6 +72,15 @@ class SparqlExpression {
                     std::make_move_iterator(childResult.end()));
     }
     return result;
+  }
+
+  // Return true iff this expression contains an aggregate like SUM, COUNT etc.
+  // This information is needed to check if there is an implicit GROUP BY in a
+  // query because any of the selected aliases contains an aggregate.
+  virtual bool containsAggregate() const {
+    return std::ranges::any_of(children(), [](const Ptr& child) {
+      return child->containsAggregate();
+    });
   }
 
   /// Get a unique identifier for this expression, used as cache key.
@@ -153,6 +163,25 @@ class SparqlExpression {
     // Default implementation: This expression adds no strings or variables.
     return {};
   }
+
+ protected:
+  // After calling this function, `isInsideAlias()` (see below) returns true for
+  // this expression as well as for all its descendants. This function must be
+  // called by all child classes that are aggregate expressions.
+  virtual void setIsInsideAggregate() final {
+    isInsideAggregate_ = true;
+    // Note: `child` is a `unique_ptr` to a non-const object. So we could
+    // technically use `const auto&` in the following loop, but this would be
+    // misleading (the pointer is used in a `const` manner, but the pointee is
+    // not).
+    for (auto& child : children()) {
+      child->setIsInsideAggregate();
+    }
+  }
+
+  // Return true if this class or any of its ancestors in the expression tree is
+  // an aggregate. For an example usage see the `LiteralExpression` class.
+  bool isInsideAggregate() const { return isInsideAggregate_; }
 };
 }  // namespace sparqlExpression
 
