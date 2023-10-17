@@ -11,7 +11,9 @@
 #include <sstream>
 #include <tuple>
 
+#include "./AllocatorTestHelpers.h"
 #include "./GTestHelpers.h"
+#include "./IdTestHelpers.h"
 #include "engine/CallFixedSize.h"
 #include "engine/Engine.h"
 #include "engine/Join.h"
@@ -22,33 +24,28 @@
 #include "util/Random.h"
 #include "util/SourceLocation.h"
 
-ad_utility::AllocatorWithLimit<Id>& allocator() {
-  static ad_utility::AllocatorWithLimit<Id> a{
-      ad_utility::makeAllocationMemoryLeftThreadsafeObject(
-          std::numeric_limits<size_t>::max())};
-  return a;
-}
-
-auto I = [](const auto& id) {
-  return Id::makeFromVocabIndex(VocabIndex::make(id));
-};
-
 // For easier reading. We repeat that type combination so often, that this
 // will make things a lot easier in terms of reading and writing.
 using VectorTable = std::vector<std::vector<size_t>>;
 
 /*
- * Return an 'IdTable' with the given 'tableContent'. all rows must have the
+ * Return an 'IdTable' with the given 'tableContent' by applying the
+ * `transformation` to each of them. All rows of `tableContent` must have the
  * same length.
  */
-IdTable makeIdTableFromVector(const VectorTable& tableContent) {
-  AD_CHECK(!tableContent.empty());
-  IdTable result{tableContent[0].size(), allocator()};
+template <typename Transformation = decltype(ad_utility::testing::VocabId)>
+IdTable makeIdTableFromVector(const VectorTable& tableContent,
+                              Transformation transformation = {}) {
+  if (tableContent.empty()) {
+    return IdTable{ad_utility::testing::makeAllocator()};
+  }
+  IdTable result{tableContent[0].size(), ad_utility::testing::makeAllocator()};
 
   // Copying the content into the table.
   for (const auto& row : tableContent) {
-    AD_CHECK(row.size() == result.numColumns());  // All rows of an IdTable must
-                                                  // have the same length.
+    AD_CONTRACT_CHECK(row.size() ==
+                      result.numColumns());  // All rows of an IdTable must
+                                             // have the same length.
     const size_t backIndex{result.size()};
 
     // TODO<clang 16> This should be
@@ -57,8 +54,27 @@ IdTable makeIdTableFromVector(const VectorTable& tableContent) {
     result.emplace_back();
 
     for (size_t c = 0; c < row.size(); c++) {
-      result(backIndex, c) = I(row[c]);
+      result(backIndex, c) = transformation(row[c]);
     }
+  }
+
+  return result;
+}
+
+inline IdTable makeIdTableFromIdVector(
+    const std::vector<std::vector<Id>>& tableContent) {
+  if (tableContent.empty()) {
+    return IdTable{ad_utility::testing::makeAllocator()};
+  }
+  IdTable result{tableContent[0].size(), ad_utility::testing::makeAllocator()};
+
+  // Copy the content into the table.
+  for (const auto& row : tableContent) {
+    // All rows of an IdTable must have the same length.
+    AD_CONTRACT_CHECK(row.size() == result.numColumns());
+    // TODO<joka921> Can this be a single call to `push_back`
+    result.emplace_back();
+    std::ranges::copy(row, result.back().begin());
   }
 
   return result;
@@ -78,7 +94,7 @@ IdTable makeIdTableFromVector(const VectorTable& tableContent) {
  * @param l Ignore it. It's only here for being able to make better messages,
  *  if a IdTable fails the comparison.
  */
-void compareIdTableWithExpectedContent(
+inline void compareIdTableWithExpectedContent(
     const IdTable& table, const IdTable& expectedContent,
     const bool resultMustBeSortedByJoinColumn = false,
     const size_t joinColumn = 0,

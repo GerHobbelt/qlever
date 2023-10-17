@@ -4,21 +4,16 @@
 
 #include <gmock/gmock.h>
 
-#include "../src/parser/data/VarOrTerm.h"
+#include "./util/AllocatorTestHelpers.h"
+#include "parser/data/VarOrTerm.h"
 
 using namespace std::string_literals;
 using ::testing::Optional;
 
-ad_utility::AllocatorWithLimit<Id>& allocator() {
-  static ad_utility::AllocatorWithLimit<Id> a{
-      ad_utility::makeAllocationMemoryLeftThreadsafeObject(
-          std::numeric_limits<size_t>::max())};
-  return a;
-}
-
+namespace {
 struct ContextWrapper {
   Index _index{};
-  ResultTable _resultTable{allocator()};
+  ResultTable _resultTable{ad_utility::testing::makeAllocator()};
   // TODO<joka921> `VariableToColumnMap`
   ad_utility::HashMap<Variable, size_t> _hashMap{};
 
@@ -28,14 +23,15 @@ struct ContextWrapper {
 };
 
 ContextWrapper prepareContext() { return {}; }
+}  // namespace
 
 TEST(SparqlDataTypesTest, BlankNodeInvalidLabelsThrowException) {
-  EXPECT_THROW(BlankNode(false, ""), ad_semsearch::Exception);
-  EXPECT_THROW(BlankNode(false, "label with spaces"), ad_semsearch::Exception);
-  EXPECT_THROW(BlankNode(false, "trailing-dash-"), ad_semsearch::Exception);
-  EXPECT_THROW(BlankNode(false, "-leading-dash"), ad_semsearch::Exception);
-  EXPECT_THROW(BlankNode(false, "trailing.dots."), ad_semsearch::Exception);
-  EXPECT_THROW(BlankNode(false, ".leading.dots"), ad_semsearch::Exception);
+  EXPECT_THROW(BlankNode(false, ""), ad_utility::Exception);
+  EXPECT_THROW(BlankNode(false, "label with spaces"), ad_utility::Exception);
+  EXPECT_THROW(BlankNode(false, "trailing-dash-"), ad_utility::Exception);
+  EXPECT_THROW(BlankNode(false, "-leading-dash"), ad_utility::Exception);
+  EXPECT_THROW(BlankNode(false, "trailing.dots."), ad_utility::Exception);
+  EXPECT_THROW(BlankNode(false, ".leading.dots"), ad_utility::Exception);
 }
 
 TEST(SparqlDataTypesTest, BlankNodeEvaluatesCorrectlyBasedOnContext) {
@@ -77,24 +73,23 @@ TEST(SparqlDataTypesTest, BlankNodeEvaluateIsPropagatedCorrectly) {
 }
 
 TEST(SparqlDataTypesTest, IriInvalidSyntaxThrowsException) {
-  EXPECT_THROW(Iri{"http://linkwithoutangularbrackets"},
-               ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<<nestedangularbrackets>>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<duplicatedangularbracker>>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<<duplicatedangularbracker>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<noend"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"nostart>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<\"withdoublequote>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<{withcurlybrace>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<}withcurlybrace>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<|withpipesymbol>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<^withcaret>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<\\withbackslash>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<`withbacktick>"}, ad_semsearch::Exception);
+  EXPECT_THROW(Iri{"http://linkwithoutangularbrackets"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<<nestedangularbrackets>>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<duplicatedangularbracker>>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<<duplicatedangularbracker>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<noend"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"nostart>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<\"withdoublequote>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<{withcurlybrace>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<}withcurlybrace>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<|withpipesymbol>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<^withcaret>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<\\withbackslash>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<`withbacktick>"}, ad_utility::Exception);
   // U+0000 (NULL) to U+0020 (Space) are all forbidden characters
   // but the following two are probably the most common cases
-  EXPECT_THROW(Iri{"<with whitespace>"}, ad_semsearch::Exception);
-  EXPECT_THROW(Iri{"<with\r\nnewline>"}, ad_semsearch::Exception);
+  EXPECT_THROW(Iri{"<with whitespace>"}, ad_utility::Exception);
+  EXPECT_THROW(Iri{"<with\r\nnewline>"}, ad_utility::Exception);
 }
 
 TEST(SparqlDataTypesTest, IriValidIriIsPreserved) {
@@ -196,11 +191,11 @@ TEST(SparqlDataTypesTest, VariableNormalizesDollarSign) {
 }
 
 TEST(SparqlDataTypesTest, VariableInvalidNamesThrowException) {
-  EXPECT_THROW(Variable{"no_leading_var_or_dollar"}, ad_semsearch::Exception);
-  EXPECT_THROW(Variable{""}, ad_semsearch::Exception);
-  EXPECT_THROW(Variable{"? var with space"}, ad_semsearch::Exception);
-  EXPECT_THROW(Variable{"?"}, ad_semsearch::Exception);
-  EXPECT_THROW(Variable{"$"}, ad_semsearch::Exception);
+  EXPECT_THROW(Variable{"no_leading_var_or_dollar"}, ad_utility::Exception);
+  EXPECT_THROW(Variable{""}, ad_utility::Exception);
+  EXPECT_THROW(Variable{"? var with space"}, ad_utility::Exception);
+  EXPECT_THROW(Variable{"?"}, ad_utility::Exception);
+  EXPECT_THROW(Variable{"$"}, ad_utility::Exception);
 }
 
 TEST(SparqlDataTypesTest, VariableEvaluatesCorrectlyBasedOnContext) {
