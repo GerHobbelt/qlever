@@ -4,9 +4,10 @@
 
 #include <gtest/gtest.h>
 
-#include "../src/global/ValueIdComparators.h"
-#include "../src/util/Random.h"
 #include "./ValueIdTestHelpers.h"
+#include "./util/IdTestHelpers.h"
+#include "global/ValueIdComparators.h"
+#include "util/Random.h"
 
 using namespace valueIdComparators;
 
@@ -74,18 +75,18 @@ auto testGetRangesForId(auto begin, auto end, ValueId id,
     for (auto [rangeBegin, rangeEnd] : ranges) {
       while (it != rangeBegin) {
         ASSERT_FALSE(isMatching(*it, id)) << *it << ' ' << id;
-        ASSERT_FALSE(compareIds(*it, id, comparison));
+        ASSERT_FALSE(compareIds(*it, id, comparison)) << *it << ' ' << id;
         ++it;
       }
       while (it != rangeEnd) {
         ASSERT_TRUE(isMatching(*it, id)) << *it << ' ' << id;
-        ASSERT_TRUE(compareIds(*it, id, comparison));
+        ASSERT_TRUE(compareIds(*it, id, comparison)) << *it << ' ' << id;
         ++it;
       }
     }
     while (it != end) {
       ASSERT_FALSE(isMatching(*it, id));
-      ASSERT_FALSE(compareIds(*it, id, comparison));
+      ASSERT_FALSE(compareIds(*it, id, comparison)) << *it << ' ' << id;
       ++it;
     }
   };
@@ -252,4 +253,16 @@ TEST(ValueIdComparators, IndexTypes) {
   testImpl.operator()<Datatype::VocabIndex>(&getVocabIndex);
   testImpl.operator()<Datatype::TextRecordIndex>(&getTextRecordIndex);
   testImpl.operator()<Datatype::LocalVocabIndex>(&getLocalVocabIndex);
+}
+
+TEST(ValueIdComparators, contractViolations) {
+  auto u = ValueId::makeUndefined();
+  auto I = ad_utility::testing::IntId;
+  // Invalid value for the `Comparison` enum.
+  ASSERT_ANY_THROW((compareIds(u, u, static_cast<Comparison>(542))));
+  ASSERT_ANY_THROW(
+      (compareWithEqualIds(u, u, u, static_cast<Comparison>(542))));
+
+  // The third argument must be >= the second.
+  ASSERT_ANY_THROW((compareWithEqualIds(I(3), I(25), I(12), Comparison::LE)));
 }
