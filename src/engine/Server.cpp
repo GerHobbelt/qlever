@@ -28,36 +28,28 @@ Server::Server(unsigned short port, size_t numThreads,
     : numThreads_(numThreads),
       port_(port),
       accessToken_(std::move(accessToken)),
-      allocator_{ad_utility::makeAllocationMemoryLeftThreadsafeObject(
-                     maxMem.getBytes()),
-                 [this](size_t numBytesToAllocate) {
+      allocator_{ad_utility::makeAllocationMemoryLeftThreadsafeObject(maxMem),
+                 [this](ad_utility::MemorySize numMemoryToAllocate) {
                    cache_.makeRoomAsMuchAsPossible(MAKE_ROOM_SLACK_FACTOR *
-                                                   numBytesToAllocate /
-                                                   sizeof(Id));
+                                                   numMemoryToAllocate);
                  }},
       index_{allocator_},
       enablePatternTrick_(usePatternTrick),
       // The number of server threads currently also is the number of queries
       // that can be processed simultaneously.
       threadPool_{numThreads} {
-  // TODO<joka921> Write a strong type for KB, MB, GB etc and use it
-  // in the cache and the memory limit
-  // Convert a number of gigabytes to the number of Ids that find in that
-  // amount of memory.
-  auto toNumIds = [](size_t gigabytes) -> size_t {
-    return gigabytes * (1ull << 30u) / sizeof(Id);
-  };
   // This also directly triggers the update functions and propagates the
   // values of the parameters to the cache.
   RuntimeParameters().setOnUpdateAction<"cache-max-num-entries">(
       [this](size_t newValue) { cache_.setMaxNumEntries(newValue); });
   RuntimeParameters().setOnUpdateAction<"cache-max-size-gb">(
-      [this, toNumIds](size_t newValue) {
-        cache_.setMaxSize(toNumIds(newValue));
+      [this](size_t newValue) {
+        cache_.setMaxSize(ad_utility::MemorySize::gigabytes(newValue));
       });
   RuntimeParameters().setOnUpdateAction<"cache-max-size-gb-single-entry">(
-      [this, toNumIds](size_t newValue) {
-        cache_.setMaxSizeSingleEntry(toNumIds(newValue));
+      [this](size_t newValue) {
+        cache_.setMaxSizeSingleEntry(
+            ad_utility::MemorySize::gigabytes(newValue));
       });
 }
 
@@ -472,8 +464,11 @@ nlohmann::json Server::composeCacheStatsJson() const {
   nlohmann::json result;
   result["num-non-pinned-entries"] = cache_.numNonPinnedEntries();
   result["num-pinned-entries"] = cache_.numPinnedEntries();
-  result["non-pinned-size"] = cache_.nonPinnedSize();
-  result["pinned-size"] = cache_.pinnedSize();
+
+  // TODO Get rid of the `getByte()`, once `MemorySize` has it's own json
+  // converter.
+  result["non-pinned-size"] = cache_.nonPinnedSize().getBytes();
+  result["pinned-size"] = cache_.pinnedSize().getBytes();
   result["num-pinned-index-scan-sizes"] = cache_.pinnedSizes().rlock()->size();
   return result;
 }
@@ -571,11 +566,9 @@ boost::asio::awaitable<void> Server::processQuery(
     // required by the SPARQL standard.
     const auto supportedMediaTypes = []() {
       static const std::vector<MediaType> mediaTypes{
-          ad_utility::MediaType::sparqlJson,
-          ad_utility::MediaType::qleverJson,
-          ad_utility::MediaType::tsv,
-          ad_utility::MediaType::csv,
-          ad_utility::MediaType::turtle,
+          ad_utility::MediaType::sparqlJson, ad_utility::MediaType::sparqlXml,
+          ad_utility::MediaType::qleverJson, ad_utility::MediaType::tsv,
+          ad_utility::MediaType::csv,        ad_utility::MediaType::turtle,
           ad_utility::MediaType::octetStream};
       return mediaTypes;
     };
@@ -682,6 +675,7 @@ boost::asio::awaitable<void> Server::processQuery(
       case ad_utility::MediaType::csv:
       case ad_utility::MediaType::tsv:
       case ad_utility::MediaType::octetStream:
+      case ad_utility::MediaType::sparqlXml:
       case ad_utility::MediaType::turtle: {
         co_await sendStreamableResponse(mediaType.value());
       } break;
