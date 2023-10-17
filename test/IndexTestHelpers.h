@@ -93,12 +93,13 @@ inline Index makeTestIndex(const std::string& indexBasename,
     index.setOnDiskBase(indexBasename);
     index.setUsePatterns(usePatterns);
     index.setPrefixCompression(usePrefixCompression);
-    index.createFromFile<TurtleParserAuto>(inputFilename);
+    index.createFromFile(inputFilename);
   }
   Index index{ad_utility::makeUnlimitedAllocator<Id>()};
   index.setUsePatterns(usePatterns);
   index.setLoadAllPermutations(loadAllPermutations);
   index.createFromOnDiskIndex(indexBasename);
+  ad_utility::setGlobalLoggingStream(&std::cout);
   return index;
 }
 
