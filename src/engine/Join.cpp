@@ -35,8 +35,6 @@ Join::Join(QueryExecutionContext* qec, std::shared_ptr<QueryExecutionTree> t1,
     std::swap(t1, t2);
     std::swap(t1JoinCol, t2JoinCol);
   }
-
-  // TODO<joka921> Combine the trees and the join columns in the interface.
   if (isFullScanDummy(t1)) {
     AD_CONTRACT_CHECK(!isFullScanDummy(t2));
     std::swap(t1, t2);
@@ -72,7 +70,7 @@ string Join::asStringImpl(size_t indent) const {
 string Join::getDescriptor() const {
   std::string joinVar = "";
   for (auto p : _left->getVariableColumns()) {
-    if (p.second == _leftJoinCol) {
+    if (p.second.columnIndex_ == _leftJoinCol) {
       joinVar = p.first.name();
       break;
     }
@@ -81,10 +79,11 @@ string Join::getDescriptor() const {
 }
 
 // _____________________________________________________________________________
-void Join::computeResult(ResultTable* result) {
+ResultTable Join::computeResult() {
   LOG(DEBUG) << "Getting sub-results for join result computation..." << endl;
   size_t leftWidth = _left->getResultWidth();
   size_t rightWidth = _right->getResultWidth();
+  IdTable idTable{getExecutionContext()->getAllocator()};
 
   // TODO<joka921> Currently the _resultTypes are set incorrectly in case
   // of early stopping. For now, early stopping is thus disabled.
@@ -106,8 +105,7 @@ void Join::computeResult(ResultTable* result) {
   // Check for joins with dummy
   AD_CORRECTNESS_CHECK(!isFullScanDummy(_left));
   if (isFullScanDummy(_right)) {
-    computeResultForJoinWithFullScanDummy(result);
-    return;
+    return computeResultForJoinWithFullScanDummy();
   }
 
   LOG(TRACE) << "Computing left side..." << endl;
@@ -134,72 +132,33 @@ void Join::computeResult(ResultTable* result) {
 
   LOG(DEBUG) << "Computing Join result..." << endl;
 
-  AD_CONTRACT_CHECK(result);
+  idTable.setNumColumns(leftWidth + rightWidth - 1);
 
-  result->_idTable.setNumColumns(leftWidth + rightWidth - 1);
-  result->_resultTypes.reserve(result->_idTable.numColumns());
-  result->_resultTypes.insert(result->_resultTypes.end(),
-                              leftRes->_resultTypes.begin(),
-                              leftRes->_resultTypes.end());
-  for (size_t i = 0; i < rightRes->_idTable.numColumns(); i++) {
-    if (i != _rightJoinCol) {
-      result->_resultTypes.push_back(rightRes->_resultTypes[i]);
-    }
-  }
-  result->_sortedBy = {_leftJoinCol};
-
-  int lwidth = leftRes->_idTable.numColumns();
-  int rwidth = rightRes->_idTable.numColumns();
-  int reswidth = result->_idTable.numColumns();
+  int lwidth = leftRes->idTable().numColumns();
+  int rwidth = rightRes->idTable().numColumns();
+  int reswidth = idTable.numColumns();
 
   CALL_FIXED_SIZE((std::array{lwidth, rwidth, reswidth}), &Join::join, this,
-                  leftRes->_idTable, _leftJoinCol, rightRes->_idTable,
-                  _rightJoinCol, &result->_idTable);
+                  leftRes->idTable(), _leftJoinCol, rightRes->idTable(),
+                  _rightJoinCol, &idTable);
+
+  LOG(DEBUG) << "Join result computation done" << endl;
 
   // If only one of the two operands has a non-empty local vocabulary, share
   // with that one (otherwise, throws an exception).
-  result->shareLocalVocabFromNonEmptyOf(*leftRes, *rightRes);
-
-  LOG(DEBUG) << "Join result computation done" << endl;
+  return {std::move(idTable), resultSortedOn(),
+          ResultTable::getSharedLocalVocabFromNonEmptyOf(*leftRes, *rightRes)};
 }
 
 // _____________________________________________________________________________
 VariableToColumnMap Join::computeVariableToColumnMap() const {
-  VariableToColumnMap retVal;
-  if (!isFullScanDummy(_left) && !isFullScanDummy(_right)) {
-    retVal = _left->getVariableColumns();
-    size_t leftSize = _left->getResultWidth();
-    for (const auto& [variable, column] : _right->getVariableColumns()) {
-      if (column < _rightJoinCol) {
-        retVal[variable] = leftSize + column;
-      }
-      if (column > _rightJoinCol) {
-        retVal[variable] = leftSize + column - 1;
-      }
-    }
-  } else {
-    if (isFullScanDummy(_right)) {
-      retVal = _left->getVariableColumns();
-      size_t leftSize = _left->getResultWidth();
-      for (const auto& [variable, column] : _right->getVariableColumns()) {
-        // Skip the first col for the dummy
-        if (column != 0) {
-          retVal[variable] = leftSize + column - 1;
-        }
-      }
-    } else {
-      for (const auto& [variable, column] : _left->getVariableColumns()) {
-        // Skip+drop the first col for the dummy and subtract one from others.
-        if (column != 0) {
-          retVal[variable] = column - 1;
-        }
-      }
-      for (const auto& [variable, column] : _right->getVariableColumns()) {
-        retVal[variable] = 2 + column;
-      }
-    }
+  AD_CORRECTNESS_CHECK(!isFullScanDummy(_left));
+  if (isFullScanDummy(_right)) {
+    AD_CORRECTNESS_CHECK(_rightJoinCol == 0u);
   }
-  return retVal;
+  return makeVarToColMapForJoinOperation(
+      _left->getVariableColumns(), _right->getVariableColumns(),
+      {{_leftJoinCol, _rightJoinCol}}, BinOpType::Join);
 }
 
 // _____________________________________________________________________________
@@ -263,23 +222,19 @@ size_t Join::getCostEstimate() {
 }
 
 // _____________________________________________________________________________
-void Join::computeResultForJoinWithFullScanDummy(ResultTable* result) {
+ResultTable Join::computeResultForJoinWithFullScanDummy() {
+  IdTable idTable{getExecutionContext()->getAllocator()};
   LOG(DEBUG) << "Join by making multiple scans..." << endl;
   AD_CORRECTNESS_CHECK(!isFullScanDummy(_left) && isFullScanDummy(_right));
   _right->getRootOperation()->updateRuntimeInformationWhenOptimizedOut({});
-  result->_idTable.setNumColumns(_left->getResultWidth() + 2);
-  result->_sortedBy = {_leftJoinCol};
+  idTable.setNumColumns(_left->getResultWidth() + 2);
 
   shared_ptr<const ResultTable> nonDummyRes = _left->getResult();
-  result->_resultTypes.reserve(result->_idTable.numColumns());
-  result->_resultTypes.insert(result->_resultTypes.end(),
-                              nonDummyRes->_resultTypes.begin(),
-                              nonDummyRes->_resultTypes.end());
-  result->_resultTypes.push_back(ResultTable::ResultType::KB);
-  result->_resultTypes.push_back(ResultTable::ResultType::KB);
 
-  doComputeJoinWithFullScanDummyRight(nonDummyRes->_idTable, &result->_idTable);
-  LOG(DEBUG) << "Join (with dummy) done. Size: " << result->size() << endl;
+  doComputeJoinWithFullScanDummyRight(nonDummyRes->idTable(), &idTable);
+  LOG(DEBUG) << "Join (with dummy) done. Size: " << idTable.size() << endl;
+  return {std::move(idTable), resultSortedOn(),
+          nonDummyRes->getSharedLocalVocab()};
 }
 
 // _____________________________________________________________________________
