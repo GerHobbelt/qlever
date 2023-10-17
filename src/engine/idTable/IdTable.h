@@ -219,6 +219,7 @@ class IdTable {
   // `std::vector<someRowType>`.
   size_t numRows() const { return numRows_; }
   size_t size() const { return numRows(); }
+  bool empty() const { return numRows() == 0; }
 
   // Return the number of columns.
   size_t numColumns() const {
@@ -253,6 +254,15 @@ class IdTable {
   const_row_reference_restricted operator[](size_t index) const {
     return *(begin() + index);
   }
+
+  // The usual `front` and `back` functions to make the interface similar to
+  // `std::vector` aand other containers.
+  // TODO<C++23, joka921> Remove the duplicates via explicit object parameters
+  // ("deducing this").
+  row_reference_restricted front() { return (*this)[0]; }
+  const_row_reference_restricted front() const { return (*this)[0]; }
+  row_reference_restricted back() { return (*this)[numRows() - 1]; }
+  const_row_reference_restricted back() const { return (*this)[numRows() - 1]; }
 
   // Resize the `IdTable` to exactly `numRows`. If `numRows < size()`, then the
   // last `size() - numRows` rows of the table will be deleted. If
@@ -549,6 +559,14 @@ class IdTable {
     return true;
   }
 
+  // Get the `i`-th column. It is stored contiguously in memory.
+  std::span<T> getColumn(size_t i) {
+    return {data().data() + i * capacityRows_, numRows_};
+  }
+  std::span<const T> getColumn(size_t i) const {
+    return {data().data() + i * capacityRows_, numRows_};
+  }
+
  private:
   // Get direct access to the underlying data() as a reference.
   Storage& data() requires(!isView) { return data_; }
@@ -632,14 +650,6 @@ class IdTable {
     if (numRows_ == capacityRows_) {
       reserveWithMinimalGrowth(capacityRows_ + 1);
     }
-  }
-
-  // Get the `i`-th column. It is stored contiguously in memory.
-  std::span<T> getColumn(size_t i) {
-    return {data().data() + i * capacityRows_, numRows_};
-  }
-  std::span<const T> getColumn(size_t i) const {
-    return {data().data() + i * capacityRows_, numRows_};
   }
 
   // Common implementation for const and mutable overloads of `getColumns`
