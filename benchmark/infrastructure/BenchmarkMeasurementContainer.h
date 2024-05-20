@@ -147,12 +147,12 @@ class ResultTable : public BenchmarkMetadataGetter {
   std::string descriptorForLog_;
   // The names of the columns.
   std::vector<std::string> columnNames_;
-  // The entries in the table. Access is [row, column]. Can be the time in
-  // seconds, a string, or empty.
+  // The entries in the table. Access is [row, column].
   std::vector<std::vector<EntryType>> entries_;
 
   // Needed for testing purposes.
   FRIEND_TEST(BenchmarkMeasurementContainerTest, ResultTable);
+  FRIEND_TEST(BenchmarkMeasurementContainerTest, ResultTableEraseRow);
   FRIEND_TEST(BenchmarkMeasurementContainerTest, ResultGroup);
 
  public:
@@ -196,8 +196,7 @@ class ResultTable : public BenchmarkMetadataGetter {
    Starts with `(0,0)`.
   @param functionToMeasure The function, which execution time will be measured.
   */
-  template <typename Function>
-  requires std::invocable<Function>
+  template <std::invocable Function>
   void addMeasurement(const size_t& row, const size_t& column,
                       const Function& functionToMeasure) {
     AD_CONTRACT_CHECK(row < numRows() && column < numColumns());
@@ -227,8 +226,7 @@ class ResultTable : public BenchmarkMetadataGetter {
 
   @param row, column Which table entry to read. Starts with `(0,0)`.
   */
-  template <typename T>
-  requires ad_utility::isTypeContainedIn<T, EntryType>
+  template <ad_utility::SameAsAnyTypeIn<EntryType> T>
   T getEntry(const size_t row, const size_t column) const {
     AD_CONTRACT_CHECK(row < numRows() && column < numColumns());
     static_assert(!ad_utility::isSimilar<T, std::monostate>);
@@ -248,6 +246,13 @@ class ResultTable : public BenchmarkMetadataGetter {
   @brief Adds a new empty row at the bottom of the table.
   */
   void addRow();
+
+  /*
+  @brief Delete the given row.
+
+  @param rowIdx Uses matrix coordinates.
+  */
+  void deleteRow(const size_t rowIdx);
 
   /*
   The number of rows.
@@ -300,6 +305,7 @@ class ResultGroup : public BenchmarkMetadataGetter {
 
   // Needed for testing purposes.
   FRIEND_TEST(BenchmarkMeasurementContainerTest, ResultGroup);
+  FRIEND_TEST(BenchmarkMeasurementContainerTest, ResultGroupDeleteMember);
 
  public:
   /*
@@ -319,8 +325,7 @@ class ResultGroup : public BenchmarkMetadataGetter {
   @param functionToMeasure The function, who's execution time will be
   measured and saved.
   */
-  template <typename Function>
-  requires std::invocable<Function>
+  template <std::invocable Function>
   ResultEntry& addMeasurement(const std::string& descriptor,
                               const Function& functionToMeasure) {
     resultEntries_.push_back(ad_utility::make_copyable_unique<ResultEntry>(
@@ -328,6 +333,13 @@ class ResultGroup : public BenchmarkMetadataGetter {
         functionToMeasure));
     return (*resultEntries_.back());
   }
+
+  /*
+  Delete the given `ResultEntry` from the group. Note: Because the group has
+  ownership of all contained entries,  this will invalidate the argument
+  `ResultEntry`.
+  */
+  void deleteMeasurement(ResultEntry& entry);
 
   /*
   @brief Adds a new instance of `ResultTable` to the group.
@@ -343,6 +355,13 @@ class ResultGroup : public BenchmarkMetadataGetter {
                         const std::vector<std::string>& rowNames,
                         const std::vector<std::string>& columnNames);
 
+  /*
+  Delete the given `ResultTable` from the group. Note: Because the group has
+  ownership of all contained entries, this will invalidate the argument
+  `ResultTable`.
+  */
+  void deleteTable(ResultTable& table);
+
   // User defined conversion to `std::string`.
   explicit operator std::string() const;
   friend std::ostream& operator<<(std::ostream& os,
@@ -350,6 +369,11 @@ class ResultGroup : public BenchmarkMetadataGetter {
 
   // JSON serialization.
   friend void to_json(nlohmann::json& j, const ResultGroup& resultGroup);
+
+ private:
+  // The implementation for the general deletion of entries.
+  template <ad_utility::SameAsAny<ResultEntry, ResultTable> T>
+  void deleteEntryImpl(T& entry);
 };
 
 }  // namespace ad_benchmark
