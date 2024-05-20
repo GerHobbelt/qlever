@@ -402,8 +402,9 @@ TEST(IndexTest, getIgnoredIdRanges) {
     return id;
   };
 
-  Id qlLangtag = getId("<QLever-internal-function/langtag>");
-  Id en = getId("<QLever-internal-function/@en>");
+  Id qlLangtag =
+      getId("<http://qlever.cs.uni-freiburg.de/builtin-functions/langtag>");
+  Id en = getId("<http://qlever.cs.uni-freiburg.de/builtin-functions/@en>");
   Id enLabel = getId("@en@<label>");
   Id label = getId("<label>");
   Id firstLiteral = getId("\"A\"");
@@ -414,7 +415,8 @@ TEST(IndexTest, getIgnoredIdRanges) {
     return Id::makeFromVocabIndex(id.getVocabIndex().incremented());
   };
 
-  // The range of all entities that start with "<QLever-internal-function/"
+  // The range of all entities that start with
+  // "<http://qlever.cs.uni-freiburg.de/builtin-functions/"
   auto internalEntities = std::pair{en, increment(qlLangtag)};
   // The range of all entities that start with @ (like `@en@<label>`)
   auto predicatesWithLangtag = std::pair{enLabel, increment(enLabel)};
@@ -565,4 +567,11 @@ TEST(IndexTest, getPermutation) {
   EXPECT_EQ(&index.SPO(), &index.getPermutation(SPO));
   EXPECT_EQ(&index.OPS(), &index.getPermutation(OPS));
   EXPECT_EQ(&index.OSP(), &index.getPermutation(OSP));
+}
+
+TEST(IndexTest, trivialGettersAndSetters) {
+  Index index{ad_utility::makeUnlimitedAllocator<Id>()};
+  index.memoryLimitIndexBuilding() = 7_kB;
+  EXPECT_EQ(index.memoryLimitIndexBuilding(), 7_kB);
+  EXPECT_EQ(std::as_const(index).memoryLimitIndexBuilding(), 7_kB);
 }
