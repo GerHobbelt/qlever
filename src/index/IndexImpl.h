@@ -158,19 +158,11 @@ class IndexImpl {
   size_t numPredicatesNormal_ = 0;
   size_t numObjectsNormal_ = 0;
   size_t numTriplesNormal_ = 0;
+  string indexId_;
   /**
    * @brief Maps pattern ids to sets of predicate ids.
    */
   CompactVectorOfStrings<Id> patterns_;
-  /**
-   * @brief Maps entity ids to pattern ids.
-   */
-  std::vector<PatternID> hasPattern_;
-  /**
-   * @brief Maps entity ids to sets of predicate ids
-   */
-  CompactVectorOfStrings<Id> hasPredicate_;
-
   ad_utility::AllocatorWithLimit<Id> allocator_;
 
   // TODO: make those private and allow only const access
@@ -277,10 +269,8 @@ class IndexImpl {
   bool getId(const string& element, Id* id) const;
 
   // ___________________________________________________________________________
-  std::pair<Id, Id> prefix_range(const std::string& prefix) const;
+  Index::Vocab::PrefixRanges prefixRanges(std::string_view prefix) const;
 
-  const vector<PatternID>& getHasPattern() const;
-  const CompactVectorOfStrings<Id>& getHasPredicate() const;
   const CompactVectorOfStrings<Id>& getPatterns() const;
   /**
    * @return The multiplicity of the Entites column (0) of the full has-relation
@@ -305,44 +295,46 @@ class IndexImpl {
   // --------------------------------------------------------------------------
   std::string_view wordIdToString(WordIndex wordIndex) const;
 
+  size_t getSizeOfTextBlockForEntities(const string& words) const;
+
+  // Returns the size of the whole textblock. If the word is very long or not
+  // prefixed then only a small number of words actually match. So the final
+  // result is much smaller.
+  // Note that as a cost estimate the estimation is correct. Because we always
+  // have to read the complete block and then filter by the actually needed
+  // words.
+  // TODO: improve size estimate by adding a correction factor.
+  size_t getSizeOfTextBlockForWord(const string& words) const;
+
   size_t getSizeEstimate(const string& words) const;
 
-  void callFixedGetContextListForWords(const string& words,
-                                       IdTable* result) const;
+  // Returns a set of [textRecord, term] pairs where the term is contained in
+  // the textRecord. The term can be either the wordOrPrefix itself or a word
+  // that has wordOrPrefix as a prefix. Returned IdTable has columns:
+  // textRecord, word. Sorted by textRecord.
+  IdTable getWordPostingsForTerm(
+      const string& wordOrPrefix,
+      const ad_utility::AllocatorWithLimit<Id>& allocator) const;
 
-  template <int WIDTH>
-  void getContextListForWords(const string& words, IdTable* result) const;
+  // Returns a set of textRecords and their corresponding entities and
+  // scores. Each textRecord contains its corresponding entity and the term.
+  // Returned IdTable has columns: textRecord, entity, score. Sorted by
+  // textRecord.
+  // NOTE: This returns a superset because it contains the whole block and
+  // unfitting words are filtered out later by the join with the
+  // TextIndexScanForWords operation.
+  IdTable getEntityMentionsForWord(
+      const string& term,
+      const ad_utility::AllocatorWithLimit<Id>& allocator) const;
 
-  void getECListForWordsOneVar(const string& words, size_t limit,
-                               IdTable* result) const;
+  size_t getIndexOfBestSuitedElTerm(const vector<string>& terms) const;
 
-  // With two or more variables.
-  void getECListForWords(const string& words, size_t nofVars, size_t limit,
-                         IdTable* result) const;
+  IdTable readWordCl(const TextBlockMetaData& tbmd,
+                     const ad_utility::AllocatorWithLimit<Id>& allocator) const;
 
-  // With filtering. Needs many template instantiations but
-  // only nofVars truly makes a difference. Others are just data types
-  // of result tables.
-  void getFilteredECListForWords(const string& words, const IdTable& filter,
-                                 size_t filterColumn, size_t nofVars,
-                                 size_t limit, IdTable* result) const;
-
-  // Special cast with a width-one filter.
-  void getFilteredECListForWordsWidthOne(const string& words,
-                                         const IdTable& filter, size_t nofVars,
-                                         size_t limit, IdTable* result) const;
-
-  Index::WordEntityPostings getContextEntityScoreListsForWords(
-      const string& words) const;
-
-  Index::WordEntityPostings getWordPostingsForTerm(const string& term) const;
-
-  Index::WordEntityPostings getEntityPostingsForTerm(const string& term) const;
-
-  Index::WordEntityPostings readWordCl(const TextBlockMetaData& tbmd) const;
-
-  Index::WordEntityPostings readWordEntityCl(
-      const TextBlockMetaData& tbmd) const;
+  IdTable readWordEntityCl(
+      const TextBlockMetaData& tbmd,
+      const ad_utility::AllocatorWithLimit<Id>& allocator) const;
 
   string getTextExcerpt(TextRecordIndex cid) const {
     if (cid.get() >= docsDB_._size) {
@@ -389,6 +381,8 @@ class IndexImpl {
   const string& getTextName() const { return textMeta_.getName(); }
 
   const string& getKbName() const { return pso_.metaData().getName(); }
+
+  const string& getIndexId() const { return indexId_; }
 
   size_t getNofTextRecords() const { return textMeta_.getNofTextRecords(); }
   size_t getNofWordPostings() const { return textMeta_.getNofWordPostings(); }
@@ -550,8 +544,6 @@ class IndexImpl {
       size_t nofElements, off_t from, size_t nofBytes,
       MakeFromUint64t makeFromUint = MakeFromUint64t{}) const;
 
-  size_t getIndexOfBestSuitedElTerm(const vector<string>& terms) const;
-
   // Get the metadata for the block from the text index that contains the
   // `word`. Also works for prefixes that are terminated with `PREFIX_CHAR` like
   // "astro*". Returns `nullopt` if no suitable block was found because no
@@ -613,9 +605,6 @@ class IndexImpl {
   friend class IndexTest_createFromOnDiskIndexTest_Test;
   friend class CreatePatternsFixture_createPatterns_Test;
 
-  template <class T>
-  void writeAsciiListFile(const string& filename, const T& ids) const;
-
   bool isLiteral(const string& object) const;
 
  public:
@@ -650,58 +639,60 @@ class IndexImpl {
   // The index contains several triples that are not part of the "actual"
   // knowledge graph, but are added by QLever for internal reasons (e.g. for an
   // efficient implementation of language filters). For a given
-  // `Permutation::Enum`, returns the following `std::pair`: First: A
-  // `vector<pair<Id, Id>>` that denotes ranges in the first column
-  //        of the permutation that imply that a triple is added. For example
-  //        in the `SPO` and `SOP` permutation a literal subject means that the
-  //        triple was added (literals are not legal subjects in RDF), so the
-  //        pair `(idOfFirstLiteral, idOfLastLiteral + 1)` will be contained
-  //        in the vector.
-  // Second: A lambda that checks for a triple *that is not already excluded
+  // `Permutation::Enum`, returns the following `std::pair`:
+  //
+  // first:  A `vector<pair<Id, Id>>` that denotes ranges in the first column
+  //         of the permutation that imply that a triple is added. For example
+  //         in the `SPO` and `SOP` permutation a literal subject means that the
+  //         triple was added (literals are not legal subjects in RDF), so the
+  //         pair `(idOfFirstLiteral, idOfLastLiteral + 1)` will be contained
+  //         in the vector.
+  // second: A lambda that checks for a triple *that is not already excluded
   //         by the ignored ranges from the first argument* whether it still
   //         is an added triple. For example in the `Sxx` and `Oxx` permutation
   //         a triple where the predicate starts with '@' (instead of the usual
   //         '<' is an added triple from the language filter implementation.
+  //
   // Note: A triple from a given permutation is an added triple if and only if
   //       it's first column is contained in any of the ranges from `first` OR
   //       the lambda `second` returns true for that triple.
+  //
   // For example usages see `IndexScan.cpp` (the implementation of the full
   // index scan) and `GroupBy.cpp`.
   auto getIgnoredIdRanges(const Permutation::Enum permutation) const {
     std::vector<std::pair<Id, Id>> ignoredRanges;
     ignoredRanges.emplace_back(qlever::getBoundsForSpecialIds());
 
-    auto literalRange = getVocab().prefix_range("\"");
-    auto taggedPredicatesRange = getVocab().prefix_range("@");
-    auto internalEntitiesRange =
-        getVocab().prefix_range(INTERNAL_ENTITIES_URI_PREFIX);
+    auto literalRanges = getVocab().prefixRanges("\"");
+    auto taggedPredicatesRanges = getVocab().prefixRanges("@");
+    auto internalEntitiesRanges =
+        getVocab().prefixRanges(INTERNAL_ENTITIES_URI_PREFIX);
 
-    auto pushIgnoredRange = [&ignoredRanges](const auto& range) {
-      ignoredRanges.emplace_back(Id::makeFromVocabIndex(range.first),
-                                 Id::makeFromVocabIndex(range.second));
+    auto pushIgnoredRange = [&ignoredRanges](const auto& ranges) {
+      for (const auto& range : ranges.ranges()) {
+        ignoredRanges.emplace_back(Id::makeFromVocabIndex(range.first),
+                                   Id::makeFromVocabIndex(range.second));
+      }
     };
-    pushIgnoredRange(internalEntitiesRange);
+    pushIgnoredRange(internalEntitiesRanges);
     using enum Permutation::Enum;
     if (permutation == SPO || permutation == SOP) {
-      pushIgnoredRange(literalRange);
+      pushIgnoredRange(literalRanges);
     } else if (permutation == PSO || permutation == POS) {
-      pushIgnoredRange(taggedPredicatesRange);
+      pushIgnoredRange(taggedPredicatesRanges);
     }
 
     // A lambda that checks whether the `predicateId` is an internal ID like
     // `ql:has-pattern` or `@en@rdfs:label`.
-    auto isInternalPredicateId = [internalEntitiesRange,
-                                  taggedPredicatesRange](Id predicateId) {
+    auto isInternalPredicateId = [internalEntitiesRanges,
+                                  taggedPredicatesRanges](Id predicateId) {
       if (predicateId.getDatatype() == Datatype::Undefined) {
         return true;
       }
       AD_CORRECTNESS_CHECK(predicateId.getDatatype() == Datatype::VocabIndex);
-      auto idx = predicateId.getVocabIndex();
-      auto isInRange = [idx](const auto& range) {
-        return range.first <= idx && idx < range.second;
-      };
-      return (isInRange(internalEntitiesRange) ||
-              isInRange(taggedPredicatesRange));
+      auto index = predicateId.getVocabIndex();
+      return (internalEntitiesRanges.contain(index) ||
+              taggedPredicatesRanges.contain(index));
     };
 
     auto isTripleIgnored = [permutation,
@@ -743,7 +734,7 @@ class IndexImpl {
   // metadata. Also builds the patterns if specified.
   template <typename... NextSorter>
   requires(sizeof...(NextSorter) <= 1)
-  std::optional<PatternCreatorNew::TripleSorter> createSPOAndSOP(
+  std::optional<PatternCreator::TripleSorter> createSPOAndSOP(
       size_t numColumns, auto& isInternalId, BlocksOfTriples sortedTriples,
       NextSorter&&... nextSorter);
   // Create the OSP and OPS permutations. Additionally, count the number of
@@ -786,7 +777,7 @@ class IndexImpl {
   // of only two permutations (where we have to build the Pxx permutations). In
   // all other cases the Sxx permutations are built first because we need the
   // patterns.
-  std::optional<PatternCreatorNew::TripleSorter> createFirstPermutationPair(
+  std::optional<PatternCreator::TripleSorter> createFirstPermutationPair(
       auto&&... args) {
     static_assert(std::is_same_v<FirstPermutation, SortBySPO>);
     static_assert(std::is_same_v<SecondPermutation, SortByOSP>);
@@ -815,6 +806,6 @@ class IndexImpl {
   // these five columns sorted by PSO, to be used as an input for building the
   // PSO and POS permutations.
   std::unique_ptr<ExternalSorter<SortByPSO, 5>> buildOspWithPatterns(
-      PatternCreatorNew::TripleSorter sortersFromPatternCreator,
+      PatternCreator::TripleSorter sortersFromPatternCreator,
       auto isQLeverInternalId);
 };

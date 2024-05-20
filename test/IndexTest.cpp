@@ -186,40 +186,6 @@ TEST(IndexTest, createFromTurtleTest) {
   runTest(false, true);
 }
 
-TEST(CreatePatterns, createPatterns) {
-  {
-    std::string kb =
-        "<a>  <b>  <c>  .\n"
-        "<a>  <b>  <c2> .\n"
-        "<a>  <b2> <c>  .\n"
-        "<a2> <b2> <c2> .\n"
-        "<a2> <d>  <c2> .";
-
-    const Index& indexNoImpl = getQec(kb)->getIndex();
-    const IndexImpl& index = indexNoImpl.getImpl();
-
-    ASSERT_EQ(2u, index.getHasPattern().size());
-    ASSERT_EQ(0u, index.getHasPredicate().size());
-    auto getId = ad_utility::testing::makeGetId(indexNoImpl);
-    // Pattern p0 (for subject <a>) consists of <b> and <b2)
-    std::vector<Id> p0{getId("<b>"), getId("<b2>")};
-    // Pattern p1 (for subject <a2>) consists of <b2> and <d>)
-    std::vector<Id> p1{getId("<b2>"), getId("<d>")};
-
-    auto checkPattern = [&index](const auto& expected, Id subject) {
-      PatternID patternIdx =
-          index.getHasPattern()[subject.getVocabIndex().get()];
-      const auto& actual = index.getPatterns()[patternIdx];
-      for (size_t i = 0; i < actual.size(); i++) {
-        ASSERT_EQ(expected[i], actual[i]);
-      }
-    };
-
-    checkPattern(p0, getId("<a>"));
-    checkPattern(p1, getId("<a2>"));
-  }
-}
-
 TEST(IndexTest, createFromOnDiskIndexTest) {
   std::string kb =
       "<a>  <b>  <c>  .\n"
@@ -248,6 +214,19 @@ TEST(IndexTest, createFromOnDiskIndexTest) {
   ASSERT_TRUE(index.POS().metaData().getMetaData(b).isFunctional());
   ASSERT_TRUE(index.POS().metaData().getMetaData(b2).isFunctional());
 };
+
+TEST(IndexTest, indexId) {
+  std::string kb =
+      "<a1> <b> <c1> .\n"
+      "<a2> <b> <c2> .\n"
+      "<a2> <b> <c1> .\n"
+      "<a3> <b> <c2> .";
+  // Build index with all permutations (arg 2) and no patterns (arg 3). That
+  // way, we get four triples, two distinct subjects, one distinct predicate
+  // and two distinct objects.
+  const Index& index = getQec(kb, true, false)->getIndex();
+  ASSERT_EQ(index.getIndexId(), "#.4.3.1.2");
+}
 
 TEST(IndexTest, scanTest) {
   auto testWithAndWithoutPrefixCompression = [](bool useCompression) {
@@ -435,6 +414,15 @@ TEST(IndexTest, getIgnoredIdRanges) {
   auto predicatesWithLangtag = std::pair{enLabel, increment(enLabel)};
   // The range of all literals;
   auto literals = std::pair{firstLiteral, increment(lastLiteral)};
+  // Nothing in the external vocabulary for this test.
+  //
+  // TODO: Also have words in the external vocabulary for this test. This
+  // requires making getQec() easier to use when setting only few of the many
+  // default arguments to other values.
+  auto firstIdExternalVocabulary = Id::makeFromVocabIndex(
+      VocabIndex::make(index.getVocab().getInternalVocab().size()));
+  auto emptyRangeExternalVocabulary =
+      std::pair{firstIdExternalVocabulary, firstIdExternalVocabulary};
 
   auto specialIds = qlever::getBoundsForSpecialIds();
   {
@@ -448,7 +436,8 @@ TEST(IndexTest, getIgnoredIdRanges) {
     ASSERT_FALSE(lambda(std::array{x, x, x}));
     EXPECT_THAT(ranges,
                 UnorderedElementsAre(internalEntities, predicatesWithLangtag,
-                                     specialIds));
+                                     specialIds, emptyRangeExternalVocabulary,
+                                     emptyRangeExternalVocabulary));
   }
   {
     auto [ranges, lambda] = index.getIgnoredIdRanges(Permutation::PSO);
@@ -461,7 +450,8 @@ TEST(IndexTest, getIgnoredIdRanges) {
     ASSERT_FALSE(lambda(std::array{x, x, x}));
     EXPECT_THAT(ranges,
                 UnorderedElementsAre(internalEntities, predicatesWithLangtag,
-                                     specialIds));
+                                     specialIds, emptyRangeExternalVocabulary,
+                                     emptyRangeExternalVocabulary));
   }
   {
     auto [ranges, lambda] = index.getIgnoredIdRanges(Permutation::SOP);
@@ -469,7 +459,9 @@ TEST(IndexTest, getIgnoredIdRanges) {
     ASSERT_FALSE(lambda(std::array{x, firstLiteral, label}));
     ASSERT_FALSE(lambda(std::array{x, x, label}));
     EXPECT_THAT(ranges,
-                UnorderedElementsAre(internalEntities, literals, specialIds));
+                UnorderedElementsAre(internalEntities, literals, specialIds,
+                                     emptyRangeExternalVocabulary,
+                                     emptyRangeExternalVocabulary));
   }
   {
     auto [ranges, lambda] = index.getIgnoredIdRanges(Permutation::SPO);
@@ -477,14 +469,17 @@ TEST(IndexTest, getIgnoredIdRanges) {
     ASSERT_FALSE(lambda(std::array{x, label, firstLiteral}));
     ASSERT_FALSE(lambda(std::array{x, label, x}));
     EXPECT_THAT(ranges,
-                UnorderedElementsAre(internalEntities, literals, specialIds));
+                UnorderedElementsAre(internalEntities, literals, specialIds,
+                                     emptyRangeExternalVocabulary,
+                                     emptyRangeExternalVocabulary));
   }
   {
     auto [ranges, lambda] = index.getIgnoredIdRanges(Permutation::OSP);
     ASSERT_TRUE(lambda(std::array{firstLiteral, x, enLabel}));
     ASSERT_FALSE(lambda(std::array{firstLiteral, x, label}));
     ASSERT_FALSE(lambda(std::array{x, x, label}));
-    EXPECT_THAT(ranges, UnorderedElementsAre(internalEntities, specialIds));
+    EXPECT_THAT(ranges, UnorderedElementsAre(internalEntities, specialIds,
+                                             emptyRangeExternalVocabulary));
   }
   {
     auto [ranges, lambda] = index.getIgnoredIdRanges(Permutation::OPS);
@@ -493,7 +488,8 @@ TEST(IndexTest, getIgnoredIdRanges) {
     ASSERT_FALSE(lambda(std::array{x, label, x}));
     auto hasPattern = qlever::specialIds.at(HAS_PATTERN_PREDICATE);
     ASSERT_TRUE(lambda(std::array{firstLiteral, hasPattern, x}));
-    EXPECT_THAT(ranges, UnorderedElementsAre(internalEntities, specialIds));
+    EXPECT_THAT(ranges, UnorderedElementsAre(internalEntities, specialIds,
+                                             emptyRangeExternalVocabulary));
   }
 }
 

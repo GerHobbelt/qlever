@@ -103,16 +103,6 @@ class Index {
   [[nodiscard]] const TextVocab& getTextVocab() const;
 
   // --------------------------------------------------------------------------
-  //  -- RETRIEVAL ---
-  // --------------------------------------------------------------------------
-  typedef std::vector<std::array<Id, 1>> WidthOneList;
-  typedef std::vector<std::array<Id, 2>> WidthTwoList;
-  typedef std::vector<std::array<Id, 3>> WidthThreeList;
-  typedef std::vector<std::array<Id, 4>> WidthFourList;
-  typedef std::vector<std::array<Id, 5>> WidthFiveList;
-  typedef std::vector<vector<Id>> VarWidthList;
-
-  // --------------------------------------------------------------------------
   // RDF RETRIEVAL
   // --------------------------------------------------------------------------
   [[nodiscard]] size_t getCardinality(const TripleComponent& comp,
@@ -129,10 +119,8 @@ class Index {
 
   bool getId(const std::string& element, Id* id) const;
 
-  [[nodiscard]] std::pair<Id, Id> prefix_range(const std::string& prefix) const;
+  [[nodiscard]] Vocab::PrefixRanges prefixRanges(std::string_view prefix) const;
 
-  [[nodiscard]] const vector<PatternID>& getHasPattern() const;
-  [[nodiscard]] const CompactVectorOfStrings<Id>& getHasPredicate() const;
   [[nodiscard]] const CompactVectorOfStrings<Id>& getPatterns() const;
   /**
    * @return The multiplicity of the entites column (0) of the full has-relation
@@ -157,45 +145,24 @@ class Index {
   // --------------------------------------------------------------------------
   [[nodiscard]] std::string_view wordIdToString(WordIndex wordIndex) const;
 
+  [[nodiscard]] size_t getSizeOfTextBlockForWord(const std::string& word) const;
+
+  [[nodiscard]] size_t getSizeOfTextBlockForEntities(
+      const std::string& word) const;
+
   [[nodiscard]] size_t getSizeEstimate(const std::string& words) const;
 
-  void getContextListForWords(const std::string& words, IdTable* result) const;
+  IdTable getWordPostingsForTerm(
+      const std::string& term,
+      const ad_utility::AllocatorWithLimit<Id>& allocator) const;
 
-  void getECListForWordsOneVar(const std::string& words, size_t limit,
-                               IdTable* result) const;
+  IdTable getEntityMentionsForWord(
+      const string& term,
+      const ad_utility::AllocatorWithLimit<Id>& allocator) const;
 
-  // With two or more variables.
-  void getECListForWords(const std::string& words, size_t nofVars, size_t limit,
-                         IdTable* result) const;
-
-  // With filtering. Needs many template instantiations but
-  // only nofVars truly makes a difference. Others are just data types
-  // of result tables.
-  void getFilteredECListForWords(const std::string& words,
-                                 const IdTable& filter, size_t filterColumn,
-                                 size_t nofVars, size_t limit,
-                                 IdTable* result) const;
-
-  // Special cast with a width-one filter.
-  void getFilteredECListForWordsWidthOne(const std::string& words,
-                                         const IdTable& filter, size_t nofVars,
-                                         size_t limit, IdTable* result) const;
-
-  WordEntityPostings getContextEntityScoreListsForWords(
-      const std::string& words) const;
-
-  WordEntityPostings getWordPostingsForTerm(const std::string& term) const;
-
-  WordEntityPostings getEntityPostingsForTerm(const std::string& term) const;
+  size_t getIndexOfBestSuitedElTerm(const vector<string>& terms) const;
 
   [[nodiscard]] std::string getTextExcerpt(TextRecordIndex cid) const;
-
-  // Only for debug reasons and external encoding tests.
-  // Supply an empty vector to dump all lists above a size threshold.
-  void dumpAsciiLists(const vector<std::string>& lists,
-                      bool decodeGapsFreq) const;
-
-  void dumpAsciiLists(const TextBlockMetaData& tbmd) const;
 
   [[nodiscard]] float getAverageNofEntityContexts() const;
 
@@ -225,6 +192,8 @@ class Index {
   const std::string& getTextName() const;
 
   const std::string& getKbName() const;
+
+  const std::string& getIndexId() const;
 
   NumNormalAndInternal numTriples() const;
 

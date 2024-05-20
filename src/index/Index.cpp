@@ -83,18 +83,8 @@ bool Index::getId(const std::string& element, Id* id) const {
 }
 
 // ____________________________________________________________________________
-std::pair<Id, Id> Index::prefix_range(const std::string& prefix) const {
-  return pimpl_->prefix_range(prefix);
-}
-
-// ____________________________________________________________________________
-const vector<PatternID>& Index::getHasPattern() const {
-  return pimpl_->getHasPattern();
-}
-
-// ____________________________________________________________________________
-const CompactVectorOfStrings<Id>& Index::getHasPredicate() const {
-  return pimpl_->getHasPredicate();
+Index::Vocab::PrefixRanges Index::prefixRanges(std::string_view prefix) const {
+  return pimpl_->prefixRanges(prefix);
 }
 
 // ____________________________________________________________________________
@@ -123,62 +113,37 @@ std::string_view Index::wordIdToString(WordIndex wordIndex) const {
 }
 
 // ____________________________________________________________________________
+size_t Index::getSizeOfTextBlockForWord(const std::string& word) const {
+  return pimpl_->getSizeOfTextBlockForWord(word);
+}
+
+// ____________________________________________________________________________
+size_t Index::getSizeOfTextBlockForEntities(const std::string& word) const {
+  return pimpl_->getSizeOfTextBlockForEntities(word);
+}
+
+// ____________________________________________________________________________
 size_t Index::getSizeEstimate(const std::string& words) const {
   return pimpl_->getSizeEstimate(words);
 }
 
 // ____________________________________________________________________________
-void Index::getContextListForWords(const std::string& words,
-                                   IdTable* result) const {
-  return pimpl_->callFixedGetContextListForWords(words, result);
+IdTable Index::getWordPostingsForTerm(
+    const std::string& term,
+    const ad_utility::AllocatorWithLimit<Id>& allocator) const {
+  return pimpl_->getWordPostingsForTerm(term, allocator);
 }
 
 // ____________________________________________________________________________
-void Index::getECListForWordsOneVar(const std::string& words, size_t limit,
-                                    IdTable* result) const {
-  return pimpl_->getECListForWordsOneVar(words, limit, result);
+IdTable Index::getEntityMentionsForWord(
+    const string& term,
+    const ad_utility::AllocatorWithLimit<Id>& allocator) const {
+  return pimpl_->getEntityMentionsForWord(term, allocator);
 }
 
 // ____________________________________________________________________________
-void Index::getECListForWords(const std::string& words, size_t nofVars,
-                              size_t limit, IdTable* result) const {
-  return pimpl_->getECListForWords(words, nofVars, limit, result);
-}
-
-// ____________________________________________________________________________
-void Index::getFilteredECListForWords(const std::string& words,
-                                      const IdTable& filter,
-                                      size_t filterColumn, size_t nofVars,
-                                      size_t limit, IdTable* result) const {
-  return pimpl_->getFilteredECListForWords(words, filter, filterColumn, nofVars,
-                                           limit, result);
-}
-
-// ____________________________________________________________________________
-void Index::getFilteredECListForWordsWidthOne(const std::string& words,
-                                              const IdTable& filter,
-                                              size_t nofVars, size_t limit,
-                                              IdTable* result) const {
-  return pimpl_->getFilteredECListForWordsWidthOne(words, filter, nofVars,
-                                                   limit, result);
-}
-
-// ____________________________________________________________________________
-Index::WordEntityPostings Index::getContextEntityScoreListsForWords(
-    const std::string& words) const {
-  return pimpl_->getContextEntityScoreListsForWords(words);
-}
-
-// ____________________________________________________________________________
-Index::WordEntityPostings Index::getWordPostingsForTerm(
-    const std::string& term) const {
-  return pimpl_->getWordPostingsForTerm(term);
-}
-
-// ____________________________________________________________________________
-Index::WordEntityPostings Index::getEntityPostingsForTerm(
-    const std::string& term) const {
-  return pimpl_->getEntityPostingsForTerm(term);
+size_t Index::getIndexOfBestSuitedElTerm(const vector<string>& terms) const {
+  return pimpl_->getIndexOfBestSuitedElTerm(terms);
 }
 
 // ____________________________________________________________________________
@@ -252,6 +217,9 @@ const std::string& Index::getTextName() const { return pimpl_->getTextName(); }
 
 // ____________________________________________________________________________
 const std::string& Index::getKbName() const { return pimpl_->getKbName(); }
+
+// ____________________________________________________________________________
+const std::string& Index::getIndexId() const { return pimpl_->getIndexId(); }
 
 // ____________________________________________________________________________
 Index::NumNormalAndInternal Index::numTriples() const {
