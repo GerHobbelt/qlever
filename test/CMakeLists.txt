@@ -116,6 +116,8 @@ addLinkAndDiscoverTest(EngineTest engine)
 
 addLinkAndDiscoverTest(JoinTest engine)
 
+addLinkAndDiscoverTest(TextLimitOperationTest engine)
+
 addLinkAndDiscoverTest(QueryPlannerTest engine)
 
 addLinkAndDiscoverTest(HashMapTest)
@@ -371,6 +373,8 @@ addLinkAndDiscoverTest(UpdateFetcherTest http)
 addLinkAndDiscoverTest(MessageSenderTest http)
 
 addLinkAndDiscoverTest(CancellationHandleTest util)
+
+addLinkAndDiscoverTest(ProgressBarTest util)
 
 addLinkAndDiscoverTest(CachingMemoryResourceTest)
 

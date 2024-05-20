@@ -6,15 +6,16 @@
 #include <random>
 
 #include "../benchmark/infrastructure/Benchmark.h"
+#include "../test/engine/ValuesForTesting.h"
 #include "../test/util/IdTableHelpers.h"
 #include "../test/util/IndexTestHelpers.h"
 #include "engine/GroupBy.h"
 #include "engine/Sort.h"
 #include "engine/Values.h"
-#include "engine/ValuesForTesting.h"
 #include "engine/sparqlExpressions/AggregateExpression.h"
 #include "engine/sparqlExpressions/GroupConcatExpression.h"
 #include "engine/sparqlExpressions/LiteralExpression.h"
+#include "global/RuntimeParameters.h"
 #include "util/Log.h"
 #include "util/Random.h"
 #include "util/TypeIdentity.h"
@@ -83,7 +84,9 @@ auto generateRandomLocalVocabAndIndicesVec = [](size_t n, size_t m) {
     for (size_t j = 0; j < m; j++) {
       str += alphanum.at(gen());
     }
-    indices.push_back(localVocab.getIndexAndAddIfNotContained(str));
+    using namespace ad_utility::triple_component;
+    indices.push_back(localVocab.getIndexAndAddIfNotContained(
+        LiteralOrIri::literalWithoutQuotes(str)));
   }
 
   return std::make_pair(std::move(localVocab), indices);

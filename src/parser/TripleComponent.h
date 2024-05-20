@@ -191,13 +191,9 @@ class TripleComponent {
     AD_CONTRACT_CHECK(!isString());
     if (isLiteral() || isIri()) {
       VocabIndex idx;
-      const std::string& content = [&]() -> const std::string& {
-        if (isLiteral()) {
-          return getLiteral().toStringRepresentation();
-        } else {
-          return getIri().toStringRepresentation();
-        }
-      }();
+      const std::string& content = isLiteral()
+                                       ? getLiteral().toStringRepresentation()
+                                       : getIri().toStringRepresentation();
       if (vocabulary.getId(content, &idx)) {
         return Id::makeFromVocabIndex(idx);
       } else if (qlever::specialIds.contains(content)) {
@@ -223,22 +219,19 @@ class TripleComponent {
     if (!id) {
       // If `toValueId` could not convert to `Id`, we have a string, which we
       // look up in (and potentially add to) our local vocabulary.
-      AD_CORRECTNESS_CHECK(isString() || isLiteral() || isIri());
-      std::string& newWord = [&]() -> std::string& {
-        if (isString()) {
-          return getString();
+      AD_CORRECTNESS_CHECK(isLiteral() || isIri());
+      using LiteralOrIri = ad_utility::triple_component::LiteralOrIri;
+      auto moveWord = [&]() -> LiteralOrIri {
+        if (isLiteral()) {
+          return LiteralOrIri{std::move(getLiteral())};
         } else {
-          if (isLiteral()) {
-            return getLiteral().toStringRepresentation();
-          } else {
-            return getIri().toStringRepresentation();
-          }
+          return LiteralOrIri{std::move(getIri())};
         }
-      }();
+      };
       // NOTE: There is a `&&` version of `getIndexAndAddIfNotContained`.
       // Otherwise, `newWord` would be copied here despite the `std::move`.
       id = Id::makeFromLocalVocabIndex(
-          localVocab.getIndexAndAddIfNotContained(std::move(newWord)));
+          localVocab.getIndexAndAddIfNotContained(moveWord()));
     }
     return id.value();
   }

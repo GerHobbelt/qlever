@@ -18,7 +18,8 @@
 #include "engine/Sort.h"
 #include "engine/TextIndexScanForEntity.h"
 #include "engine/TextIndexScanForWord.h"
-#include "engine/TransitivePath.h"
+#include "engine/TextLimit.h"
+#include "engine/TransitivePathBase.h"
 #include "engine/Union.h"
 #include "gmock/gmock-matchers.h"
 #include "gmock/gmock.h"
@@ -105,6 +106,21 @@ constexpr auto TextIndexScanForWord = [](Variable textRecordVar,
       AD_PROPERTY(::TextIndexScanForWord, word, word)));
 };
 
+// Matcher for the `TextLimit` Operation.
+constexpr auto TextLimit = [](const size_t n, const QetMatcher& childMatcher,
+                              const Variable& textRecVar,
+                              const vector<Variable>& entityVars,
+                              const vector<Variable>& scoreVars) -> QetMatcher {
+  return RootOperation<::TextLimit>(AllOf(
+      AD_PROPERTY(::TextLimit, getTextLimit, Eq(n)),
+      AD_PROPERTY(Operation, getChildren, ElementsAre(Pointee(childMatcher))),
+      AD_PROPERTY(::TextLimit, getTextRecordVariable, Eq(textRecVar)),
+      AD_PROPERTY(::TextLimit, getEntityVariables,
+                  UnorderedElementsAreArray(entityVars)),
+      AD_PROPERTY(::TextLimit, getScoreVariables,
+                  UnorderedElementsAreArray(scoreVars))));
+};
+
 inline auto TextIndexScanForEntity =
     [](Variable textRecordVar, std::variant<Variable, std::string> entity,
        string word) -> QetMatcher {
@@ -142,11 +158,6 @@ inline auto Bind = [](const QetMatcher& childMatcher,
   return RootOperation<::Bind>(AllOf(
       AD_PROPERTY(::Bind, bind, AllOf(innerMatcher)),
       AD_PROPERTY(Operation, getChildren, ElementsAre(Pointee(childMatcher)))));
-};
-
-inline auto NeutralElementOperation = []() {
-  return RootOperation<::NeutralElementOperation>(
-      An<const ::NeutralElementOperation&>());
 };
 
 // Matcher for a `CountAvailablePredicates` operation. The case of 0 children
@@ -234,15 +245,21 @@ inline auto TransitivePathSideMatcher = [](TransitivePathSide side) {
 inline auto TransitivePath =
     [](TransitivePathSide left, TransitivePathSide right, size_t minDist,
        size_t maxDist, const std::same_as<QetMatcher> auto&... childMatchers) {
-      return RootOperation<::TransitivePath>(AllOf(
-          Property("getChildren", &Operation::getChildren,
-                   ElementsAre(Pointee(childMatchers)...)),
-          AD_PROPERTY(TransitivePath, getMinDist, Eq(minDist)),
-          AD_PROPERTY(TransitivePath, getMaxDist, Eq(maxDist)),
-          AD_PROPERTY(TransitivePath, getLeft, TransitivePathSideMatcher(left)),
-          AD_PROPERTY(TransitivePath, getRight,
-                      TransitivePathSideMatcher(right))));
+      return RootOperation<::TransitivePathBase>(
+          AllOf(Property("getChildren", &Operation::getChildren,
+                         ElementsAre(Pointee(childMatchers)...)),
+                AD_PROPERTY(TransitivePathBase, getMinDist, Eq(minDist)),
+                AD_PROPERTY(TransitivePathBase, getMaxDist, Eq(maxDist)),
+                AD_PROPERTY(TransitivePathBase, getLeft,
+                            TransitivePathSideMatcher(left)),
+                AD_PROPERTY(TransitivePathBase, getRight,
+                            TransitivePathSideMatcher(right))));
     };
+
+// Match a sort operation. Currently, this is only required by the binary search
+// version of the transitive path operation. This matcher checks only the
+// children of the sort operation.
+inline auto Sort = MatchTypeAndUnorderedChildren<::Sort>;
 
 // Match a `Filter` operation. The matching of the expression is currently only
 // done via the descriptor.

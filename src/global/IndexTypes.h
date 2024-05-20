@@ -6,6 +6,7 @@
 #define QLEVER_INDEXTYPES_H
 
 #include "./TypedIndex.h"
+#include "parser/LiteralOrIri.h"
 
 // Typedefs for several kinds of typed indices that are used across QLever.
 
@@ -13,7 +14,8 @@
 // this (very intrusive) renaming doesn't interfere with too many open pull
 // requests.
 using VocabIndex = ad_utility::TypedIndex<uint64_t, "VocabIndex">;
-using LocalVocabIndex = ad_utility::TypedIndex<uint64_t, "LocalVocabIndex">;
+
+using LocalVocabIndex = const ad_utility::triple_component::LiteralOrIri*;
 using TextRecordIndex = ad_utility::TypedIndex<uint64_t, "TextRecordIndex">;
 using WordVocabIndex = ad_utility::TypedIndex<uint64_t, "WordVocabIndex">;
 using BlankNodeIndex = ad_utility::TypedIndex<uint64_t, "BlankNodeIndex">;

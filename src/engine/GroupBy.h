@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <gtest/gtest_prod.h>
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -17,7 +19,6 @@
 #include "engine/sparqlExpressions/RelationalExpressionHelpers.h"
 #include "engine/sparqlExpressions/SparqlExpressionPimpl.h"
 #include "engine/sparqlExpressions/SparqlExpressionValueGetters.h"
-#include "gtest/gtest.h"
 #include "parser/Alias.h"
 #include "parser/ParsedQuery.h"
 #include "util/TypeIdentity.h"
@@ -60,10 +61,6 @@ class GroupBy : public Operation {
   virtual size_t getResultWidth() const override;
 
   virtual vector<ColumnIndex> resultSortedOn() const override;
-
-  virtual void setTextLimit(size_t limit) override {
-    _subtree->setTextLimit(limit);
-  }
 
   virtual bool knownEmptyResult() override {
     return _subtree->knownEmptyResult();

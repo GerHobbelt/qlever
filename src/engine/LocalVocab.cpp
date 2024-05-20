@@ -11,87 +11,69 @@
 // _____________________________________________________________________________
 LocalVocab LocalVocab::clone() const {
   LocalVocab localVocabClone;
-  // First, make a deep copy of the `absl::node_hash_map` holding the actual
-  // map of strings to indexes.
-  localVocabClone.wordsToIndexesMap_ = this->wordsToIndexesMap_;
-  // The next free index should be the same.
-  localVocabClone.nextFreeIndex_ = this->nextFreeIndex_;
-  // The map from local ids to strings stores pointers to strings. So we cannot
-  // just copy these from `this->indexesToWordsMap_` to `localVocabClone`, but
-  // we need to make sure to store the pointers to the strings of the new map
-  // `localVocabClone.wordsToIndexesMap_`.
-  //
-  // NOTE: An alternative algorithm would be to sort the word-index pairs in
-  // `wordsToIndexesMap_` by index and then fill `indexesToWordsMap_` in order.
-  // This would have better locality, but the sorting takes non-linear time plus
-  // the sorting has to handle pairs of `LocalVocabIndex` and `std::string`. So
-  // for very large local vocabularies (and only then is this operation
-  // performance-criticial at all), the simpler approach below is probably
-  // better.
-  const size_t localVocabSize = this->size();
-  localVocabClone.indexesToWordsMap_.resize(localVocabSize);
-  for (const auto& [wordInMap, index] : localVocabClone.wordsToIndexesMap_) {
-    AD_CONTRACT_CHECK(index.get() < localVocabSize);
-    localVocabClone.indexesToWordsMap_[index.get()] = std::addressof(wordInMap);
-  }
+  localVocabClone.otherWordSets_ = otherWordSets_;
+  localVocabClone.otherWordSets_.push_back(primaryWordSet_);
   // Return the clone.
   return localVocabClone;
 }
 
 // _____________________________________________________________________________
+LocalVocab LocalVocab::merge(std::span<const LocalVocab*> vocabs) {
+  LocalVocab res;
+  auto inserter = std::back_inserter(res.otherWordSets_);
+  for (const auto* vocab : vocabs) {
+    std::ranges::copy(vocab->otherWordSets_, inserter);
+    *inserter = vocab->primaryWordSet_;
+  }
+  return res;
+}
+
+// _____________________________________________________________________________
 template <typename WordT>
 LocalVocabIndex LocalVocab::getIndexAndAddIfNotContainedImpl(WordT&& word) {
-  // The following code contains two subtle, but important optimizations:
-  //
-  // 1. The variant of `insert` used covers the case that `word` was already
-  // contained in the map as well as the case that it is newly inserted. This
-  // avoids computing the hash for `word` twice in case we see it for the first
-  // time (note that hashing a string is not cheap).
-  //
-  // 2. The fact that we have a member variable `nextFreeIndex_` avoids that we
-  // tentatively have to compute the next free ID every time this function is
-  // called (even when the ID is not actually needed because the word is already
-  // contained in the map).
-  //
-  auto [wordInMapAndIndex, isNewWord] =
-      wordsToIndexesMap_.insert({std::forward<WordT>(word), nextFreeIndex_});
-  const auto& [wordInMap, index] = *wordInMapAndIndex;
-  if (isNewWord) {
-    indexesToWordsMap_.push_back(&wordInMap);
-    nextFreeIndex_ = LocalVocabIndex::make(indexesToWordsMap_.size());
-  }
-  return index;
+  auto [wordIterator, isNewWord] = primaryWordSet().insert(AD_FWD(word));
+  // TODO<Libc++18> Use std::to_address (more idiomatic, but currently breaks
+  // the MacOS build.
+  return &(*wordIterator);
 }
 
 // _____________________________________________________________________________
 LocalVocabIndex LocalVocab::getIndexAndAddIfNotContained(
-    const std::string& word) {
+    const LiteralOrIri& word) {
   return getIndexAndAddIfNotContainedImpl(word);
 }
 
 // _____________________________________________________________________________
-LocalVocabIndex LocalVocab::getIndexAndAddIfNotContained(std::string&& word) {
+LocalVocabIndex LocalVocab::getIndexAndAddIfNotContained(LiteralOrIri&& word) {
   return getIndexAndAddIfNotContainedImpl(std::move(word));
 }
 
 // _____________________________________________________________________________
 std::optional<LocalVocabIndex> LocalVocab::getIndexOrNullopt(
-    const std::string& word) const {
-  auto localVocabIndex = wordsToIndexesMap_.find(word);
-  if (localVocabIndex != wordsToIndexesMap_.end()) {
-    return localVocabIndex->second;
+    const LiteralOrIri& word) const {
+  auto localVocabIndex = primaryWordSet().find(word);
+  if (localVocabIndex != primaryWordSet().end()) {
+    // TODO<Libc++18> Use std::to_address (more idiomatic, but currently breaks
+    // the MacOS build.
+    return &(*localVocabIndex);
   } else {
     return std::nullopt;
   }
 }
 
 // _____________________________________________________________________________
-const std::string& LocalVocab::getWord(LocalVocabIndex localVocabIndex) const {
-  if (localVocabIndex.get() >= indexesToWordsMap_.size()) {
-    throw std::runtime_error(absl::StrCat(
-        "LocalVocab error: request for word with local vocab index ",
-        localVocabIndex.get(), ", but size of local vocab is only ",
-        indexesToWordsMap_.size(), ", please contact the developers"));
+const LocalVocab::LiteralOrIri& LocalVocab::getWord(
+    LocalVocabIndex localVocabIndex) const {
+  return *localVocabIndex;
+}
+
+// _____________________________________________________________________________
+std::vector<LocalVocab::LiteralOrIri> LocalVocab::getAllWordsForTesting()
+    const {
+  std::vector<LiteralOrIri> result;
+  std::ranges::copy(primaryWordSet(), std::back_inserter(result));
+  for (const auto& previous : otherWordSets_) {
+    std::ranges::copy(*previous, std::back_inserter(result));
   }
-  return *(indexesToWordsMap_.at(localVocabIndex.get()));
+  return result;
 }

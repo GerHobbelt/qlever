@@ -6,36 +6,35 @@
 
 #include <cstdlib>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
-#include "absl/container/node_hash_map.h"
+#include "absl/container/node_hash_set.h"
 #include "global/Id.h"
+#include "parser/LiteralOrIri.h"
 
 // A class for maintaing a local vocabulary with contiguous (local) IDs. This is
 // meant for words that are not part of the normal vocabulary (constructed from
 // the input data at indexing time).
 //
-// TODO: This is a first version of this class with basic functionality. Note
-// that the local vocabulary used to be a simple `std::vector<std::string>`
-// defined inside of the `ResultTable` class. You gotta start somewhere.
 class LocalVocab {
  private:
+  using LiteralOrIri = ad_utility::triple_component::LiteralOrIri;
   // A map of the words in the local vocabulary to their local IDs. This is a
   // node hash map because we need the addresses of the words (which are of type
-  // `std::string`) to remain stable over their lifetime in the hash map because
-  // we refer to them in `wordsToIdsMap_` below.
-  absl::node_hash_map<std::string, LocalVocabIndex> wordsToIndexesMap_;
+  // `LiteralOrIri`) to remain stable over their lifetime in the hash map
+  // because we hand out pointers to them.
+  using Set = absl::node_hash_set<LiteralOrIri>;
+  std::shared_ptr<Set> primaryWordSet_ = std::make_shared<Set>();
 
-  // A map of the local IDs to the words. Since the IDs are contiguous, we can
-  // use a `std::vector`. We store pointers to the actual words in
-  // `wordsToIdsMap_` to avoid storing every word twice. This saves space, but
-  // costs us an indirection when looking up a word by its ID.
-  std::vector<const std::string*> indexesToWordsMap_;
+  // Local vocabularies from child operations that were merged into this
+  // vocabulary s.t. the pointers are kept alive. They have to be `const`
+  // because they are possibly shared concurrently (for example via the cache).
+  std::vector<std::shared_ptr<const Set>> otherWordSets_;
 
-  // The next free local ID (will be incremented by one each time we add a new
-  // word).
-  LocalVocabIndex nextFreeIndex_ = LocalVocabIndex::make(0);
+  auto& primaryWordSet() { return *primaryWordSet_; }
+  const auto& primaryWordSet() const { return *primaryWordSet_; }
 
  public:
   // Create a new, empty local vocabulary.
@@ -45,7 +44,9 @@ class LocalVocab {
   LocalVocab(const LocalVocab&) = delete;
   LocalVocab& operator=(const LocalVocab&) = delete;
 
-  // Make a deep copy explicitly.
+  // Make a logical copy. The clone will have an empty primary set so it can
+  // safely be modified. The contents are copied as shared pointers to const, so
+  // the function runs in linear time in the number of word sets.
   LocalVocab clone() const;
 
   // Moving a local vocabulary is not problematic (though the typical use case
@@ -56,22 +57,36 @@ class LocalVocab {
   // Get the index of a word in the local vocabulary. If the word was already
   // contained, return the already existing index. If the word was not yet
   // contained, add it, and return the new index.
-  LocalVocabIndex getIndexAndAddIfNotContained(const std::string& word);
-  LocalVocabIndex getIndexAndAddIfNotContained(std::string&& word);
+  LocalVocabIndex getIndexAndAddIfNotContained(const LiteralOrIri& word);
+  LocalVocabIndex getIndexAndAddIfNotContained(LiteralOrIri&& word);
 
   // Get the index of a word in the local vocabulary, or std::nullopt if it is
   // not contained. This is useful for testing.
   std::optional<LocalVocabIndex> getIndexOrNullopt(
-      const std::string& word) const;
+      const LiteralOrIri& word) const;
 
   // The number of words in the vocabulary.
-  size_t size() const { return indexesToWordsMap_.size(); }
+  // Note: This is not constant time, but linear in the number of word sets.
+  size_t size() const {
+    auto result = primaryWordSet().size();
+    for (const auto& previous : otherWordSets_) {
+      result += previous->size();
+    }
+    return result;
+  }
 
   // Return true if and only if the local vocabulary is empty.
-  bool empty() const { return indexesToWordsMap_.empty(); }
+  bool empty() const { return size() == 0; }
 
   // Return a const reference to the word.
-  const std::string& getWord(LocalVocabIndex localVocabIndex) const;
+  const LiteralOrIri& getWord(LocalVocabIndex localVocabIndex) const;
+
+  // Create a local vocab that contains and keeps alive all the words from each
+  // of the `vocabs`. The primary word set of the newly created vocab is empty.
+  static LocalVocab merge(std::span<const LocalVocab*> vocabs);
+
+  // Return all the words from all the word sets as a vector.
+  std::vector<LiteralOrIri> getAllWordsForTesting() const;
 
  private:
   // Common implementation for the two variants of
