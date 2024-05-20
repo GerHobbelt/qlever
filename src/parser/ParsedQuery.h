@@ -110,8 +110,10 @@ class SparqlTriple : public SparqlTripleBase<PropertyPath> {
   // actually is a property path.
   SparqlTripleSimple getSimple() const {
     AD_CONTRACT_CHECK(p_.isIri());
-    TripleComponent p = isVariable(p_._iri) ? TripleComponent{Variable{p_._iri}}
-                                            : TripleComponent(p_._iri);
+    TripleComponent p =
+        isVariable(p_._iri)
+            ? TripleComponent{Variable{p_._iri}}
+            : TripleComponent(TripleComponent::Iri::fromIriref(p_._iri));
     return {s_, p, o_, additionalScanColumns_};
   }
 };
@@ -272,14 +274,7 @@ class ParsedQuery {
    */
   void merge(const ParsedQuery& p);
 
-  [[nodiscard]] string asString() const;
-
   // If this is a SELECT query, return all the selected aliases. Return an empty
   // vector for construct clauses.
   [[nodiscard]] const std::vector<Alias>& getAliases() const;
-  // If this is a SELECT query, yield all the selected variables. If this is a
-  // CONSTRUCT query, yield all the variables that are used in the CONSTRUCT
-  // clause. Note that the result may contain duplicates in the CONSTRUCT case.
-  [[nodiscard]] cppcoro::generator<const Variable>
-  getConstructedOrSelectedVariables() const;
 };
