@@ -97,8 +97,9 @@ vector<ColumnIndex> GroupBy::resultSortedOn() const {
 vector<ColumnIndex> GroupBy::computeSortColumns(
     const QueryExecutionTree* subtree) {
   vector<ColumnIndex> cols;
+  // If we have an implicit GROUP BY, where the entire input is a single group,
+  // no sorting needs to be done.
   if (_groupByVariables.empty()) {
-    // the entire input is a single group, no sorting needs to be done
     return cols;
   }
 
@@ -107,8 +108,10 @@ vector<ColumnIndex> GroupBy::computeSortColumns(
   std::unordered_set<ColumnIndex> sortColSet;
 
   for (const auto& var : _groupByVariables) {
+    AD_CONTRACT_CHECK(inVarColMap.contains(var), "Variable ", var.name(),
+                      " not found in subtree for GROUP BY");
     ColumnIndex col = inVarColMap.at(var).columnIndex_;
-    // avoid sorting by a column twice
+    // Avoid sorting by a column twice.
     if (sortColSet.find(col) == sortColSet.end()) {
       sortColSet.insert(col);
       cols.push_back(col);
@@ -435,15 +438,65 @@ bool GroupBy::computeGroupByForSingleIndexScan(IdTable* result) {
           getPermutationForThreeVariableTriple(*_subtree, var, var);
       AD_CONTRACT_CHECK(permutation.has_value());
       table(0, 0) = Id::makeFromInt(
-          getIndex().getImpl().numDistinctCol0(permutation.value()).normal_);
+          getIndex().getImpl().numDistinctCol0(permutation.value()).normal);
     } else {
-      table(0, 0) = Id::makeFromInt(getIndex().numTriples().normal_);
+      table(0, 0) = Id::makeFromInt(getIndex().numTriples().normal);
     }
   } else {
     // TODO<joka921> The two variables IndexScans should also account for the
     // additionally added triples.
     table(0, 0) = Id::makeFromInt(indexScan->getExactSize());
   }
+  return true;
+}
+
+// ____________________________________________________________________________
+bool GroupBy::computeGroupByObjectWithCount(IdTable* result) {
+  // The child must be an `IndexScan` with exactly two variables.
+  auto* indexScan =
+      dynamic_cast<IndexScan*>(_subtree->getRootOperation().get());
+  if (!indexScan || indexScan->numVariables() != 2) {
+    return false;
+  }
+  const auto& permutedTriple = indexScan->getPermutedTriple();
+  const auto& vocabulary = getExecutionContext()->getIndex().getVocab();
+  std::optional<Id> col0Id = permutedTriple[0]->toValueId(vocabulary);
+  if (!col0Id.has_value()) {
+    return false;
+  }
+
+  // There must be exactly one GROUP BY variable and the result of the index
+  // scan must be sorted by it.
+  if (_groupByVariables.size() != 1) {
+    return false;
+  }
+  const auto& groupByVariable = _groupByVariables.at(0);
+  AD_CORRECTNESS_CHECK(
+      *(permutedTriple[1]) == groupByVariable,
+      "Result of index scan for GROUP BY must be sorted by the "
+      "GROUP BY variable, this is a bug in the query planner",
+      permutedTriple[1]->toString(), groupByVariable.name());
+
+  // There must be exactly one alias, which is a non-distinct count of one of
+  // the two variables of the index scan.
+  auto countedVariable = getVariableForNonDistinctCountOfSingleAlias();
+  bool countedVariableIsOneOfIndexScanVariables =
+      countedVariable == *(permutedTriple[1]) ||
+      countedVariable == *(permutedTriple[2]);
+  if (!countedVariableIsOneOfIndexScanVariables) {
+    return false;
+  }
+
+  // Compute the result and update the runtime information (we don't actually
+  // do the index scan, but something smarter).
+  const auto& permutation =
+      getExecutionContext()->getIndex().getPimpl().getPermutation(
+          indexScan->permutation());
+  *result = permutation.getDistinctCol1IdsAndCounts(col0Id.value(),
+                                                    cancellationHandle_);
+  indexScan->updateRuntimeInformationWhenOptimizedOut(
+      {}, RuntimeInformation::Status::optimizedOut);
+
   return true;
 }
 
@@ -502,47 +555,19 @@ bool GroupBy::computeGroupByForFullIndexScan(IdTable* result) {
     const auto& permutation =
         getExecutionContext()->getIndex().getPimpl().getPermutation(
             permutationEnum.value());
-    IdTableStatic<NUM_COLS> table = std::move(*idTable).toStatic<NUM_COLS>();
-    const auto& metaData = permutation.meta_.data();
-    // TODO<joka921> the reserve is too large because of the ignored
-    // triples. We would need to incorporate the information how many
-    // added "relations" are in each permutationEnum during index building.
-    table.reserve(metaData.size());
-    for (auto it = metaData.ordered_begin(); it != metaData.ordered_end();
-         ++it) {
-      Id id = decltype(metaData.ordered_begin())::getIdFromElement(*it);
-
-      // Check whether this is an `@en@...` predicate in a `Pxx`
-      // permutationEnum, a literal in a `Sxx` permutationEnum or some other
-      // entity that was added only for internal reasons.
-      if (std::ranges::any_of(ignoredRanges, [&id](const auto& pair) {
-            return id >= pair.first && id < pair.second;
-          })) {
-        continue;
-      }
-      Id count = Id::makeFromInt(
-          decltype(metaData.ordered_begin())::getNumRowsFromElement(*it));
-      // TODO<joka921> The count is actually not accurate at least for the
-      // `Sxx` and `Oxx` permutations because it contains the triples with
-      // predicate
-      // `@en@rdfs:label` etc. The probably easiest way to fix this is to
-      // exclude these triples from those permutations (they are only
-      // relevant for queries with a fixed subject), but then we would
-      // need to make sure, that we don't accidentally break the language
-      // filters for queries like
-      // `<fixedSubject> @en@rdfs:label ?labels`, for which the best
-      // query plan potentially goes through the `SPO` relation.
-      // Alternatively we would have to write an additional number
-      // `numNonAddedTriples` to the `IndexMetaData` which would further
-      // increase their size.
-      // TODO<joka921> Discuss this with Hannah.
-      table.emplace_back();
-      table(table.size() - 1, 0) = id;
-      if (numCounts == 1) {
-        table(table.size() - 1, 1) = count;
-      }
+    auto table = permutation.getDistinctCol0IdsAndCounts(cancellationHandle_);
+    if (NUM_COLS == 1) {
+      table.setColumnSubset({{0}});
     }
-    *idTable = std::move(table).toDynamic();
+    // TODO<joka921> This is only semi-efficient.
+    auto end = std::ranges::remove_if(table, [&ignoredRanges](const auto& row) {
+      return std::ranges::any_of(ignoredRanges,
+                                 [id = row[0]](const auto& pair) {
+                                   return id >= pair.first && id < pair.second;
+                                 });
+    });
+    table.resize(end.begin() - table.begin());
+    *idTable = std::move(table);
   };
   ad_utility::callFixedSize(numCols, doComputationForNumberOfColumns, result);
 
@@ -552,7 +577,7 @@ bool GroupBy::computeGroupByForFullIndexScan(IdTable* result) {
   return true;
 }
 
-// _____________________________________________________________________________
+// ____________________________________________________________________________
 std::optional<Permutation::Enum> GroupBy::getPermutationForThreeVariableTriple(
     const QueryExecutionTree& tree, const Variable& variableByWhichToSort,
     const Variable& variableThatMustBeContained) {
@@ -581,7 +606,7 @@ std::optional<Permutation::Enum> GroupBy::getPermutationForThreeVariableTriple(
   }
 };
 
-// _____________________________________________________________________________
+// ____________________________________________________________________________
 std::optional<GroupBy::OptimizedGroupByData> GroupBy::checkIfJoinWithFullScan(
     const Join* join) {
   if (_groupByVariables.size() != 1) {
@@ -625,7 +650,7 @@ std::optional<GroupBy::OptimizedGroupByData> GroupBy::checkIfJoinWithFullScan(
                               columnIndex};
 }
 
-// _____________________________________________________________________________
+// ____________________________________________________________________________
 bool GroupBy::computeGroupByForJoinWithFullScan(IdTable* result) {
   auto join = dynamic_cast<Join*>(_subtree->getRootOperation().get());
   if (!join) {
@@ -655,8 +680,8 @@ bool GroupBy::computeGroupByForJoinWithFullScan(IdTable* result) {
   const auto& index = getExecutionContext()->getIndex();
 
   // TODO<joka921, C++23> Simplify the following pattern by using
-  // `std::views::chunk_by` and implement a lazy version of this view for input
-  // iterators.
+  // `std::views::chunk_by` and implement a lazy version of this view for
+  // input iterators.
 
   // Take care of duplicate values in the input.
   Id currentId = subresult->idTable()(0, columnIndex);
@@ -666,11 +691,11 @@ bool GroupBy::computeGroupByForJoinWithFullScan(IdTable* result) {
   auto pushRow = [&]() {
     // If the count is 0 this means that the element with the `currentId`
     // doesn't exist in the knowledge graph. Thus, the join with a three
-    // variable triple would have filtered it out and we don't include it in the
-    // final result.
+    // variable triple would have filtered it out and we don't include it in
+    // the final result.
     if (currentCount > 0) {
-      // TODO<C++20, as soon as Clang supports it>: use `emplace_back(id1, id2)`
-      // (requires parenthesized initialization of aggregates.
+      // TODO<C++20, as soon as Clang supports it>: use `emplace_back(id1,
+      // id2)` (requires parenthesized initialization of aggregates.
       idTable.push_back({currentId, Id::makeFromInt(currentCount)});
     }
   };
@@ -698,20 +723,24 @@ bool GroupBy::computeOptimizedGroupByIfPossible(IdTable* result) {
     return true;
   } else if (computeGroupByForFullIndexScan(result)) {
     return true;
+  } else if (computeGroupByForJoinWithFullScan(result)) {
+    return true;
+  } else if (computeGroupByObjectWithCount(result)) {
+    return true;
   } else {
-    return computeGroupByForJoinWithFullScan(result);
+    return false;
   }
 }
 
 // _____________________________________________________________________________
 std::optional<GroupBy::HashMapOptimizationData>
 GroupBy::checkIfHashMapOptimizationPossible(std::vector<Aggregate>& aliases) {
-  if (!RuntimeParameters().get<"use-group-by-hash-map-optimization">()) {
+  if (!RuntimeParameters().get<"group-by-hash-map-enabled">()) {
     return std::nullopt;
   }
 
-  auto* sort = dynamic_cast<const Sort*>(_subtree->getRootOperation().get());
-  if (!sort) {
+  if (auto sort = dynamic_cast<const Sort*>(_subtree->getRootOperation().get());
+      sort == nullptr) {
     return std::nullopt;
   }
 
@@ -728,8 +757,6 @@ GroupBy::checkIfHashMapOptimizationPossible(std::vector<Aggregate>& aliases) {
 
     // Find all aggregates in the expression of the current alias.
     auto foundAggregates = findAggregates(expr);
-
-    // TODO<kcaliban> Remove as soon as all aggregates are supported
     if (!foundAggregates.has_value()) return std::nullopt;
 
     for (auto& aggregate : foundAggregates.value()) {
@@ -741,8 +768,9 @@ GroupBy::checkIfHashMapOptimizationPossible(std::vector<Aggregate>& aliases) {
   }
 
   const Variable& groupByVariable = _groupByVariables.front();
+
   auto child = _subtree->getRootOperation()->getChildren().at(0);
-  auto columnIndex = child->getVariableColumn(groupByVariable);
+  size_t columnIndex = child->getVariableColumn(groupByVariable);
 
   return HashMapOptimizationData{columnIndex, aliasesWithAggregateInfo};
 }
@@ -1131,13 +1159,12 @@ void GroupBy::createResultFromHashMap(
   evaluationContext._previousResultsFromSameGroup.resize(getResultWidth());
   evaluationContext._isPartOfGroupBy = true;
 
-  size_t blockSize = 65536;
-
-  for (size_t i = 0; i < numberOfGroups; i += blockSize) {
+  for (size_t i = 0; i < numberOfGroups; i += GROUP_BY_HASH_MAP_BLOCK_SIZE) {
     checkCancellation();
 
     evaluationContext._beginIndex = i;
-    evaluationContext._endIndex = std::min(i + blockSize, numberOfGroups);
+    evaluationContext._endIndex =
+        std::min(i + GROUP_BY_HASH_MAP_BLOCK_SIZE, numberOfGroups);
 
     for (auto& alias : aggregateAliases) {
       evaluateAlias(alias, result, evaluationContext, aggregationData,
@@ -1148,8 +1175,8 @@ void GroupBy::createResultFromHashMap(
 
 // _____________________________________________________________________________
 // Visitor function to extract values from the result of an evaluation of
-// the child expression of an aggregate, and subsequently processing the values
-// by calling the `addValue` function of the corresponding aggregate.
+// the child expression of an aggregate, and subsequently processing the
+// values by calling the `addValue` function of the corresponding aggregate.
 static constexpr auto makeProcessGroupsVisitor =
     [](size_t blockSize,
        const sparqlExpression::EvaluationContext* evaluationContext,
@@ -1191,13 +1218,12 @@ void GroupBy::computeGroupByForHashMapOptimization(
       _groupByVariables.begin(), _groupByVariables.end()};
   evaluationContext._isPartOfGroupBy = true;
 
-  size_t blockSize = 65536;
-
-  for (size_t i = 0; i < subresult.size(); i += blockSize) {
+  for (size_t i = 0; i < subresult.size(); i += GROUP_BY_HASH_MAP_BLOCK_SIZE) {
     checkCancellation();
 
     evaluationContext._beginIndex = i;
-    evaluationContext._endIndex = std::min(i + blockSize, subresult.size());
+    evaluationContext._endIndex =
+        std::min(i + GROUP_BY_HASH_MAP_BLOCK_SIZE, subresult.size());
 
     auto currentBlockSize =
         evaluationContext._endIndex - evaluationContext._beginIndex;
