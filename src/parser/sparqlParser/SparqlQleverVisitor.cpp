@@ -290,7 +290,10 @@ void Visitor::visit(Parser::SourceSelectorContext*) {
 
 // ____________________________________________________________________________________
 Variable Visitor::visit(Parser::VarContext* ctx) {
-  return Variable{ctx->getText()};
+  // `false` for the second argument means: The variable name is already
+  // validated by the grammar, no need to check it again (which would lead to an
+  // infinite loop here).
+  return Variable{ctx->getText(), false};
 }
 
 // ____________________________________________________________________________________
@@ -2073,7 +2076,7 @@ ExpressionPtr Visitor::visit([[maybe_unused]] Parser::BuiltInCallContext* ctx) {
   } else if (functionName == "concat") {
     AD_CORRECTNESS_CHECK(ctx->expressionList());
     return makeConcatExpression(visit(ctx->expressionList()));
-  } else if (functionName == "isiri") {
+  } else if (functionName == "isiri" || functionName == "isuri") {
     return createUnary(&makeIsIriExpression);
   } else if (functionName == "isblank") {
     return createUnary(&makeIsBlankExpression);

@@ -51,7 +51,6 @@ using std::vector;
 
 using json = nlohmann::json;
 
-static constexpr size_t NumColumnsIndexBuilding = 3;
 template <typename Comparator, size_t I = NumColumnsIndexBuilding>
 using ExternalSorter =
     ad_utility::CompressedExternalIdTableSorter<Comparator, I>;
@@ -71,7 +70,7 @@ struct IndexBuilderDataBase {
 // All the data from IndexBuilderDataBase and a stxxl::vector of (unsorted) ID
 // triples.
 struct IndexBuilderDataAsStxxlVector : IndexBuilderDataBase {
-  using TripleVec = ad_utility::CompressedExternalIdTable<3>;
+  using TripleVec = ad_utility::CompressedExternalIdTable<4>;
   // All the triples as Ids.
   std::unique_ptr<TripleVec> idTriples;
   // The number of triples for each partial vocabulary. This also depends on the
@@ -93,7 +92,8 @@ struct IndexBuilderDataAsFirstPermutationSorter : IndexBuilderDataBase {
 
 class IndexImpl {
  public:
-  using TripleVec = ad_utility::CompressedExternalIdTable<3>;
+  using TripleVec =
+      ad_utility::CompressedExternalIdTable<NumColumnsIndexBuilding>;
   // Block Id, Context Id, Word Id, Score, entity
   using TextVec = stxxl::vector<
       tuple<TextBlockIndex, TextRecordIndex, WordOrEntityIndex, Score, bool>>;
@@ -418,24 +418,22 @@ class IndexImpl {
   vector<float> getMultiplicities(Permutation::Enum permutation) const;
 
   // _____________________________________________________________________________
-  IdTable scan(
-      const TripleComponent& col0String,
-      std::optional<std::reference_wrapper<const TripleComponent>> col1String,
-      const Permutation::Enum& permutation,
-      Permutation::ColumnIndicesRef additionalColumns,
-      const ad_utility::SharedCancellationHandle& cancellationHandle,
-      const LimitOffsetClause& limitOffset = {}) const;
-
-  // _____________________________________________________________________________
-  IdTable scan(Id col0Id, std::optional<Id> col1Id, Permutation::Enum p,
+  IdTable scan(const ScanSpecificationAsTripleComponent& scanSpecification,
+               const Permutation::Enum& permutation,
                Permutation::ColumnIndicesRef additionalColumns,
                const ad_utility::SharedCancellationHandle& cancellationHandle,
                const LimitOffsetClause& limitOffset = {}) const;
 
   // _____________________________________________________________________________
-  size_t getResultSizeOfScan(const TripleComponent& col0,
-                             const TripleComponent& col1,
-                             const Permutation::Enum& permutation) const;
+  IdTable scan(const ScanSpecification& scanSpecification, Permutation::Enum p,
+               Permutation::ColumnIndicesRef additionalColumns,
+               const ad_utility::SharedCancellationHandle& cancellationHandle,
+               const LimitOffsetClause& limitOffset = {}) const;
+
+  // _____________________________________________________________________________
+  size_t getResultSizeOfScan(
+      const ScanSpecificationAsTripleComponent& scanSpecification,
+      const Permutation::Enum& permutation) const;
 
  private:
   // Private member functions
@@ -687,7 +685,7 @@ class IndexImpl {
         getVocab().prefixRanges(ad_utility::triple_component::literalPrefix);
     auto taggedPredicatesRanges =
         getVocab().prefixRanges(ad_utility::languageTaggedPredicatePrefix);
-    auto internal = INTERNAL_ENTITIES_URI_PREFIX;
+    std::string internal{INTERNAL_ENTITIES_URI_PREFIX};
     internal[0] = ad_utility::triple_component::iriPrefixChar;
     auto internalEntitiesRanges = getVocab().prefixRanges(internal);
 
@@ -743,7 +741,8 @@ class IndexImpl {
 
   // Functions to create the pairs of permutations during the index build. Each
   // of them takes the following arguments:
-  // * `isQleverInternalId` a callable that takes an `Id` and returns true iff
+  // * `isQleverInternalTriple` a callable that takes an `Id` and returns true
+  // iff
   //    the corresponding IRI was internally added by QLever and not part of the
   //    knowledge graph.
   // * `sortedInput`  The input, must be sorted by the first permutation in the
@@ -758,13 +757,13 @@ class IndexImpl {
   template <typename... NextSorter>
   requires(sizeof...(NextSorter) <= 1)
   std::optional<PatternCreator::TripleSorter> createSPOAndSOP(
-      size_t numColumns, auto& isInternalId, BlocksOfTriples sortedTriples,
+      size_t numColumns, auto& isInternalTriple, BlocksOfTriples sortedTriples,
       NextSorter&&... nextSorter);
   // Create the OSP and OPS permutations. Additionally, count the number of
   // distinct objects and write it to the metadata.
   template <typename... NextSorter>
   requires(sizeof...(NextSorter) <= 1)
-  void createOSPAndOPS(size_t numColumns, auto& isInternalId,
+  void createOSPAndOPS(size_t numColumns, auto& isInternalTriple,
                        BlocksOfTriples sortedTriples,
                        NextSorter&&... nextSorter);
 
@@ -773,7 +772,7 @@ class IndexImpl {
   // metadata.
   template <typename... NextSorter>
   requires(sizeof...(NextSorter) <= 1)
-  void createPSOAndPOS(size_t numColumns, auto& isInternalId,
+  void createPSOAndPOS(size_t numColumns, auto& isInternalTriple,
                        BlocksOfTriples sortedTriples,
                        NextSorter&&... nextSorter);
 
@@ -828,7 +827,7 @@ class IndexImpl {
   // subject pattern of the object (which is created by this function). Return
   // these five columns sorted by PSO, to be used as an input for building the
   // PSO and POS permutations.
-  std::unique_ptr<ExternalSorter<SortByPSO, 5>> buildOspWithPatterns(
-      PatternCreator::TripleSorter sortersFromPatternCreator,
-      auto isQLeverInternalId);
+  std::unique_ptr<ExternalSorter<SortByPSO, NumColumnsIndexBuilding + 2>>
+  buildOspWithPatterns(PatternCreator::TripleSorter sortersFromPatternCreator,
+                       auto isQleverInternalTriple);
 };
