@@ -90,7 +90,7 @@ string Join::getCacheKeyImpl() const {
 string Join::getDescriptor() const { return "Join on " + _joinVar.name(); }
 
 // _____________________________________________________________________________
-Result Join::computeResult([[maybe_unused]] bool requestLaziness) {
+ProtoResult Join::computeResult([[maybe_unused]] bool requestLaziness) {
   LOG(DEBUG) << "Getting sub-results for join result computation..." << endl;
   size_t leftWidth = _left->getResultWidth();
   size_t rightWidth = _right->getResultWidth();
@@ -560,10 +560,11 @@ void updateRuntimeInfoForLazyScan(
   scanTree.updateRuntimeInformationWhenOptimizedOut(
       RuntimeInformation::Status::lazilyMaterialized);
   auto& rti = scanTree.runtimeInfo();
-  rti.numRows_ = metadata.numElementsRead_;
+  rti.numRows_ = metadata.numElementsYielded_;
   rti.totalTime_ = metadata.blockingTime_;
   rti.addDetail("num-blocks-read", metadata.numBlocksRead_);
   rti.addDetail("num-blocks-all", metadata.numBlocksAll_);
+  rti.addDetail("num-elements-read", metadata.numElementsRead_);
 }
 }  // namespace
 

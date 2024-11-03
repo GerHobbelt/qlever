@@ -11,6 +11,7 @@
 
 #include "engine/idTable/IdTable.h"
 #include "global/Id.h"
+#include "parser/data/LimitOffsetClause.h"
 #include "util/Cache.h"
 #include "util/CancellationHandle.h"
 #include "util/ConcurrentCache.h"
@@ -176,6 +177,14 @@ class CompressedRelationWriter {
   size_t currentRelationPreviousSize_ = 0;
 
   ad_utility::TaskQueue<false> blockWriteQueue_{20, 10};
+  ad_utility::timer::ThreadSafeTimer blockWriteQueueTimer_;
+
+  // This callback is invoked for each block of small relations (which share the
+  // same block), after this block has been completely handled by this writer.
+  // The callback is used to efficiently pass the block from a permutation to
+  // its twin permutation, which only has to re-sort and write the block.
+  using SmallBlocksCallback = std::function<void(std::shared_ptr<IdTable>)>;
+  SmallBlocksCallback smallBlocksCallback_;
 
   // A dummy value for multiplicities that can only later be determined.
   static constexpr float multiplicityDummy = 42.4242f;
@@ -261,7 +270,9 @@ class CompressedRelationWriter {
   void finish() {
     AD_CORRECTNESS_CHECK(currentRelationPreviousSize_ == 0);
     writeBufferedRelationsToSingleBlock();
+    auto timer = blockWriteQueueTimer_.startMeasurement();
     blockWriteQueue_.finish();
+    timer.stop();
     outfile_.wlock()->close();
   }
 
@@ -280,9 +291,13 @@ class CompressedRelationWriter {
 
   // Compress the given `block` and write it to the `outfile_`. The
   // `firstCol0Id` and `lastCol0Id` are needed to set up the block's metadata
-  // which is appended to the internal buffer.
+  // which is appended to the internal buffer. If `invokeCallback` is true and
+  // the `smallBlocksCallback_` is not empty, then
+  // `smallBlocksCallback_(std::move(block))` is called AFTER the block has
+  // completely been dealt with.
   void compressAndWriteBlock(Id firstCol0Id, Id lastCol0Id,
-                             std::shared_ptr<IdTable> block);
+                             std::shared_ptr<IdTable> block,
+                             bool invokeCallback);
 
   // Add a small relation that will be stored in a single block, possibly
   // together with other small relations.
@@ -400,7 +415,10 @@ class CompressedRelationReader {
   struct LazyScanMetadata {
     size_t numBlocksRead_ = 0;
     size_t numBlocksAll_ = 0;
+    // If a LIMIT or OFFSET is present we possibly read more rows than we
+    // actually yield.
     size_t numElementsRead_ = 0;
+    size_t numElementsYielded_ = 0;
     std::chrono::milliseconds blockingTime_ = std::chrono::milliseconds::zero();
   };
 
@@ -470,7 +488,8 @@ class CompressedRelationReader {
   IdTable scan(const ScanSpecification& scanSpec,
                std::span<const CompressedBlockMetadata> blocks,
                ColumnIndicesRef additionalColumns,
-               const CancellationHandle& cancellationHandle) const;
+               const CancellationHandle& cancellationHandle,
+               const LimitOffsetClause& limitOffset = {}) const;
 
   // Similar to `scan` (directly above), but the result of the scan is lazily
   // computed and returned as a generator of the single blocks that are scanned.
@@ -478,8 +497,8 @@ class CompressedRelationReader {
   CompressedRelationReader::IdTableGenerator lazyScan(
       ScanSpecification scanSpec,
       std::vector<CompressedBlockMetadata> blockMetadata,
-      ColumnIndices additionalColumns,
-      CancellationHandle cancellationHandle) const;
+      ColumnIndices additionalColumns, CancellationHandle cancellationHandle,
+      LimitOffsetClause limitOffset = {}) const;
 
   // Only get the size of the result for a given permutation XYZ for a given X
   // and Y. This can be done by scanning one or two blocks. Note: The overload
@@ -581,7 +600,8 @@ class CompressedRelationReader {
   // multiple worker threads.
   IdTableGenerator asyncParallelBlockGenerator(
       auto beginBlock, auto endBlock, ColumnIndices columnIndices,
-      CancellationHandle cancellationHandle) const;
+      CancellationHandle cancellationHandle,
+      LimitOffsetClause& limitOffset) const;
 
   // Return a vector that consists of the concatenation of `baseColumns` and
   // `additionalColumns`
