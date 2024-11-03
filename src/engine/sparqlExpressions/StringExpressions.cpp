@@ -399,6 +399,57 @@ class ConcatExpression : public detail::VariadicExpression {
 using EncodeForUriExpression =
     StringExpressionImpl<1, decltype(encodeForUriImpl)>;
 
+// LANGMATCHES
+[[maybe_unused]] inline auto langMatching =
+    [](std::optional<std::string> languageTag,
+       std::optional<std::string> languageRange) {
+      if (!languageTag.has_value() || !languageRange.has_value()) {
+        return Id::makeUndefined();
+      } else {
+        return Id::makeFromBool(ad_utility::isLanguageMatch(
+            languageTag.value(), languageRange.value()));
+      }
+    };
+
+using LangMatches =
+    StringExpressionImpl<2, decltype(langMatching), StringValueGetter>;
+
+// STRING WITH LANGUAGE TAG
+[[maybe_unused]] inline auto strLangTag =
+    [](std::optional<std::string> input,
+       std::optional<std::string> langTag) -> IdOrLiteralOrIri {
+  if (!input.has_value() || !langTag.has_value()) {
+    return Id::makeUndefined();
+  } else if (!ad_utility::strIsLangTag(langTag.value())) {
+    return Id::makeUndefined();
+  } else {
+    auto lit =
+        ad_utility::triple_component::Literal::literalWithNormalizedContent(
+            asNormalizedStringViewUnsafe(input.value()),
+            std::move(langTag.value()));
+    return LiteralOrIri{lit};
+  }
+};
+
+using StrLangTagged = StringExpressionImpl<2, decltype(strLangTag)>;
+
+// STRING WITH DATATYPE IRI
+[[maybe_unused]] inline auto strIriDtTag =
+    [](std::optional<std::string> inputStr,
+       OptIri inputIri) -> IdOrLiteralOrIri {
+  if (!inputStr.has_value() || !inputIri.has_value()) {
+    return Id::makeUndefined();
+  } else {
+    auto lit =
+        ad_utility::triple_component::Literal::literalWithNormalizedContent(
+            asNormalizedStringViewUnsafe(inputStr.value()), inputIri.value());
+    return LiteralOrIri{lit};
+  }
+};
+
+using StrIriTagged =
+    StringExpressionImpl<2, decltype(strIriDtTag), IriValueGetter>;
+
 // HASH
 template <auto HashFunc>
 [[maybe_unused]] inline constexpr auto hash =
@@ -474,6 +525,18 @@ Expr makeConcatExpression(std::vector<Expr> children) {
 
 Expr makeEncodeForUriExpression(Expr child) {
   return make<EncodeForUriExpression>(child);
+}
+
+Expr makeStrLangTagExpression(Expr child1, Expr child2) {
+  return make<StrLangTagged>(child1, child2);
+}
+
+Expr makeStrIriDtExpression(Expr child1, Expr child2) {
+  return make<StrIriTagged>(child1, child2);
+}
+
+Expr makeLangMatchesExpression(Expr child1, Expr child2) {
+  return make<LangMatches>(child1, child2);
 }
 
 Expr makeMD5Expression(Expr child) { return make<MD5Expression>(child); }

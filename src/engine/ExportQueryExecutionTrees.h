@@ -2,15 +2,13 @@
 //                  Chair of Algorithms and Data Structures.
 //  Author: Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
 
-#include <cstdlib>
+#pragma once
 
 #include "engine/QueryExecutionTree.h"
 #include "parser/data/LimitOffsetClause.h"
 #include "util/CancellationHandle.h"
 #include "util/http/MediaTypes.h"
 #include "util/json.h"
-
-#pragma once
 
 // This class contains all the functionality to convert a query that has already
 // been parsed (by the SPARQL parser) and planned (by the query planner) into
@@ -51,12 +49,11 @@ class ExportQueryExecutionTrees {
   // single JSON object that is fully materialized before the function returns.
   // The `requestTimer` is used to report timing statistics on the query. It
   // must have already run during the query planning to produce the expected
-  // results. If `maxSend` is smaller than the size of the query result, then
-  // only the first `maxSend` rows are returned.
+  // results.
   static nlohmann::json computeResultAsJSON(
       const ParsedQuery& parsedQuery, const QueryExecutionTree& qet,
-      const ad_utility::Timer& requestTimer, uint64_t maxSend,
-      MediaType mediaType, CancellationHandle cancellationHandle);
+      const ad_utility::Timer& requestTimer, MediaType mediaType,
+      CancellationHandle cancellationHandle);
 
   // Convert the `id` to a human-readable string. The `index` is used to resolve
   // `Id`s with datatype `VocabIndex` or `TextRecordIndex`. The `localVocab` is
@@ -89,6 +86,14 @@ class ExportQueryExecutionTrees {
   static std::optional<std::pair<std::string, const char*>>
   idToStringAndTypeForEncodedValue(Id id);
 
+  // Acts as a helper to retrieve an LiteralOrIri object
+  // from an Id, where the Id is of type `VocabIndex` or `LocalVocabIndex`.
+  // This function should only be called with suitable `Datatype` Id's,
+  // otherwise `AD_FAIL()` is called.
+  static ad_utility::triple_component::LiteralOrIri
+  getLiteralOrIriFromVocabIndex(const Index& index, Id id,
+                                const LocalVocab& localVocab);
+
  private:
   // TODO<joka921> The following functions are all internally called by the
   // two public functions above. All the code has been inside QLever for a long
@@ -99,11 +104,11 @@ class ExportQueryExecutionTrees {
   // Similar to `queryToJSON`, but always returns the `QLeverJSON` format.
   static nlohmann::json computeQueryResultAsQLeverJSON(
       const ParsedQuery& query, const QueryExecutionTree& qet,
-      const ad_utility::Timer& requestTimer, uint64_t maxSend,
+      const ad_utility::Timer& requestTimer,
       CancellationHandle cancellationHandle);
   // Similar to `queryToJSON`, but always returns the `SparqlJSON` format.
   static nlohmann::json computeSelectQueryResultAsSparqlJSON(
-      const ParsedQuery& query, const QueryExecutionTree& qet, uint64_t maxSend,
+      const ParsedQuery& query, const QueryExecutionTree& qet,
       CancellationHandle cancellationHandle);
 
   // ___________________________________________________________________________
@@ -120,7 +125,6 @@ class ExportQueryExecutionTrees {
    *  `computeQueryResultAsQLeverJSON` to obtain the "actual" query results
    * (without the meta data)
    * @param qet The `QueryExecutionTree` of the query.
-   * @param from the first <from> entries of the idTable are skipped
    * @param limitAndOffset at most <limit> entries are written, starting at
    * <from>
    * @param columns each pair of <columnInIdTable, correspondingType> tells

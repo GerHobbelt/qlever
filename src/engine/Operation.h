@@ -209,6 +209,8 @@ class Operation {
     return computeResult(requestLaziness);
   }
 
+  const auto& getLimit() const { return _limit; }
+
  protected:
   // The QueryExecutionContext for this particular element.
   // No ownership.
@@ -219,8 +221,6 @@ class Operation {
    * @return The columns on which the result will be sorted.
    */
   [[nodiscard]] virtual vector<ColumnIndex> resultSortedOn() const = 0;
-
-  const auto& getLimit() const { return _limit; }
 
   /// interface to the generated warnings of this operation
   std::vector<std::string>& getWarnings() { return _warnings; }
@@ -259,7 +259,7 @@ class Operation {
   virtual Result computeResult(bool requestLaziness) = 0;
 
   // Create and store the complete runtime information for this operation after
-  // it has either been succesfully computed or read from the cache.
+  // it has either been successfully computed or read from the cache.
   virtual void updateRuntimeInformationOnSuccess(
       const ConcurrentLruCache::ResultAndCacheStatus& resultAndCacheStatus,
       Milliseconds duration) final;
