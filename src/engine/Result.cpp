@@ -95,6 +95,12 @@ Result::Result(cppcoro::generator<IdTable> idTables,
              SharedLocalVocabWrapper{std::move(localVocab)}} {}
 
 // _____________________________________________________________________________
+Result::Result(cppcoro::generator<IdTable> idTables,
+               std::vector<ColumnIndex> sortedBy, LocalVocabPtr localVocab)
+    : Result{std::move(idTables), std::move(sortedBy),
+             SharedLocalVocabWrapper{std::move(localVocab)}} {}
+
+// _____________________________________________________________________________
 // Apply `LimitOffsetClause` to given `IdTable`.
 void resizeIdTable(IdTable& idTable, const LimitOffsetClause& limitOffset) {
   std::ranges::for_each(
@@ -120,6 +126,9 @@ void Result::applyLimitOffset(
   // than the size of the `IdTable`, then this has no effect and runtime
   // `O(1)` (see the docs for `std::shift_left`).
   AD_CONTRACT_CHECK(limitTimeCallback);
+  if (limitOffset.isUnconstrained()) {
+    return;
+  }
   if (isFullyMaterialized()) {
     ad_utility::timer::Timer limitTimer{ad_utility::timer::Timer::Started};
     resizeIdTable(std::get<IdTable>(data_), limitOffset);

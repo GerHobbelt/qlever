@@ -993,15 +993,21 @@ TEST(SparqlParser, GroupGraphPattern) {
           m::InlineData({Var{"?a"}}, {{iri("<a>")}, {iri("<b>")}})));
   expectGraphPattern("{ SERVICE <endpoint> { ?s ?p ?o } }",
                      m::GraphPattern(m::Service(
-                         Iri{"<endpoint>"}, {Var{"?s"}, Var{"?p"}, Var{"?o"}},
-                         "{ ?s ?p ?o }")));
+                         TripleComponent::Iri::fromIriref("<endpoint>"),
+                         {Var{"?s"}, Var{"?p"}, Var{"?o"}}, "{ ?s ?p ?o }")));
   expectGraphPattern(
       "{ SERVICE <ep> { { SELECT ?s ?o WHERE { ?s ?p ?o } } } }",
-      m::GraphPattern(m::Service(Iri{"<ep>"}, {Var{"?s"}, Var{"?o"}},
+      m::GraphPattern(m::Service(TripleComponent::Iri::fromIriref("<ep>"),
+                                 {Var{"?s"}, Var{"?o"}},
                                  "{ { SELECT ?s ?o WHERE { ?s ?p ?o } } }")));
 
-  // SERVICE with SILENT or a variable endpoint is not yet supported.
-  expectGroupGraphPatternFails("{ SERVICE SILENT <ep> { ?s ?p ?o } }");
+  expectGraphPattern(
+      "{ SERVICE SILENT <ep> { { SELECT ?s ?o WHERE { ?s ?p ?o } } } }",
+      m::GraphPattern(m::Service(
+          TripleComponent::Iri::fromIriref("<ep>"), {Var{"?s"}, Var{"?o"}},
+          "{ { SELECT ?s ?o WHERE { ?s ?p ?o } } }", "", true)));
+
+  // SERVICE with a variable endpoint is not yet supported.
   expectGroupGraphPatternFails("{ SERVICE ?endpoint { ?s ?p ?o } }");
 
   // graphGraphPattern is not supported.
@@ -1018,7 +1024,7 @@ TEST(SparqlParser, RDFLiteral) {
                    "\"Astronaut\"^^<http://www.w3.org/2001/XMLSchema#string>"s);
   // The conversion to the internal date format
   // (":v:date:0000000000000001950-01-01T00:00:00") is done by
-  // TurtleStringParser<TokenizerCtre>::parseTripleObject(resultAsString) which
+  // RdfStringParser<TokenizerCtre>::parseTripleObject(resultAsString) which
   // is only called at triplesBlock.
   expectRDFLiteral(
       "\"1950-01-01T00:00:00\"^^xsd:dateTime",
@@ -1288,8 +1294,9 @@ TEST(SparqlParser, Query) {
       "SELECT * WHERE { SERVICE <endpoint> { ?s ?p ?o } }",
       m::SelectQuery(m::AsteriskSelect(),
                      m::GraphPattern(m::Service(
-                         Iri{"<endpoint>"}, {Var{"?s"}, Var{"?p"}, Var{"?o"}},
-                         "{ ?s ?p ?o }", "PREFIX doof: <http://doof.org/>"))));
+                         TripleComponent::Iri::fromIriref("<endpoint>"),
+                         {Var{"?s"}, Var{"?p"}, Var{"?o"}}, "{ ?s ?p ?o }",
+                         "PREFIX doof: <http://doof.org/>"))));
 
   // Describe and Ask Queries are not supported.
   expectQueryFails("DESCRIBE *");
@@ -1918,4 +1925,12 @@ TEST(SparqlParser, GraphRef) {
   expectGraphRefAll("NAMED", m::Variant<NAMED>());
   expectGraphRefAll("ALL", m::Variant<ALL>());
   expectGraphRefAll("GRAPH <foo>", m::GraphRefIri("<foo>"));
+}
+
+TEST(SparqlParser, SourceSelector) {
+  // This will be implemented soon, but for now we test the failure for the
+  // coverage tool.
+  auto expectSelectorFails = ExpectParseFails<&Parser::sourceSelector>{};
+  auto unreachableMatcher = ::testing::HasSubstr("should be unreachable");
+  expectSelectorFails("<x>", unreachableMatcher);
 }

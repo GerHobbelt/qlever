@@ -30,12 +30,11 @@
 class Service : public Operation {
  public:
   // The type of the function used to obtain the results, see below.
-  using GetResultFunction =
-      std::function<cppcoro::generator<std::span<std::byte>>(
-          const ad_utility::httpUtils::Url&,
-          ad_utility::SharedCancellationHandle handle,
-          const boost::beast::http::verb&, std::string_view, std::string_view,
-          std::string_view)>;
+  using GetResultFunction = std::function<HttpOrHttpsResponse(
+      const ad_utility::httpUtils::Url&,
+      ad_utility::SharedCancellationHandle handle,
+      const boost::beast::http::verb&, std::string_view, std::string_view,
+      std::string_view)>;
 
  private:
   // The parsed SERVICE clause.
@@ -105,11 +104,17 @@ class Service : public Operation {
   // The string returned by this function is used as cache key.
   std::string getCacheKeyImpl() const override;
 
-  // Compute the result using `getResultFunction_`.
+  // Compute the result using `getResultFunction_` and the siblingTree.
   ProtoResult computeResult([[maybe_unused]] bool requestLaziness) override;
+
+  // Actually compute the result for the function above.
+  ProtoResult computeResultImpl([[maybe_unused]] bool requestLaziness);
 
   // Get a VALUES clause that contains the values of the siblingTree's result.
   std::optional<std::string> getSiblingValuesClause() const;
+
+  // Create result for silent fail.
+  ProtoResult makeNeutralElementResultForSilentFail() const;
 
   // Write the given JSON result to the given result object. The `I` is the
   // width of the result table.

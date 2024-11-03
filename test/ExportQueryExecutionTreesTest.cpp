@@ -12,12 +12,16 @@
 #include "util/IdTableHelpers.h"
 #include "util/IdTestHelpers.h"
 #include "util/IndexTestHelpers.h"
+#include "util/ParseableDuration.h"
 
 using namespace std::string_literals;
+using namespace std::chrono_literals;
 using ::testing::ElementsAre;
+using ::testing::EndsWith;
 using ::testing::Eq;
 using ::testing::HasSubstr;
 
+namespace {
 // Run the given SPARQL `query` on the given Turtle `kg` and export the result
 // as the `mediaType`. `mediaType` must be TSV or CSV.
 std::string runQueryStreamableResult(const std::string& kg,
@@ -34,10 +38,12 @@ std::string runQueryStreamableResult(const std::string& kg,
   QueryPlanner qp{qec, cancellationHandle};
   auto pq = SparqlParser::parseQuery(query);
   auto qet = qp.createExecutionTree(pq);
-  auto tsvGenerator = ExportQueryExecutionTrees::computeResultAsStream(
-      pq, qet, mediaType, std::move(cancellationHandle));
+  ad_utility::Timer timer(ad_utility::Timer::Started);
+  auto strGenerator = ExportQueryExecutionTrees::computeResult(
+      pq, qet, mediaType, timer, std::move(cancellationHandle));
+
   std::string result;
-  for (const auto& block : tsvGenerator) {
+  for (const auto& block : strGenerator) {
     result += block;
   }
   return result;
@@ -59,8 +65,12 @@ nlohmann::json runJSONQuery(const std::string& kg, const std::string& query,
   auto pq = SparqlParser::parseQuery(query);
   auto qet = qp.createExecutionTree(pq);
   ad_utility::Timer timer{ad_utility::Timer::Started};
-  return ExportQueryExecutionTrees::computeResultAsJSON(
-      pq, qet, timer, mediaType, std::move(cancellationHandle));
+  std::string resStr;
+  for (auto c : ExportQueryExecutionTrees::computeResult(
+           pq, qet, mediaType, timer, std::move(cancellationHandle))) {
+    resStr += c;
+  }
+  return nlohmann::json::parse(resStr);
 }
 
 // A test case that tests the correct execution and exporting of a SELECT query
@@ -104,17 +114,18 @@ void runSelectQueryTestCase(
   EXPECT_EQ(
       runQueryStreamableResult(testCase.kg, testCase.query, csv, useTextIndex),
       testCase.resultCsv);
-  auto qleverJSONResult =
-      runJSONQuery(testCase.kg, testCase.query, qleverJson, useTextIndex);
+
+  auto qleverJSONResult = nlohmann::json::parse(runQueryStreamableResult(
+      testCase.kg, testCase.query, qleverJson, useTextIndex));
   // TODO<joka921> Test other members of the JSON result (e.g. the selected
   // variables).
   ASSERT_EQ(qleverJSONResult["query"], testCase.query);
   ASSERT_EQ(qleverJSONResult["resultsize"], testCase.resultSize);
   EXPECT_EQ(qleverJSONResult["res"], testCase.resultQLeverJSON);
 
-  auto sparqlJSONResult =
-      runJSONQuery(testCase.kg, testCase.query, sparqlJson, useTextIndex);
-  EXPECT_EQ(sparqlJSONResult, testCase.resultSparqlJSON);
+  EXPECT_EQ(nlohmann::json::parse(runQueryStreamableResult(
+                testCase.kg, testCase.query, sparqlJson, useTextIndex)),
+            testCase.resultSparqlJSON);
 
   // TODO<joka921> Use this for proper testing etc.
   auto xmlAsString = runQueryStreamableResult(testCase.kg, testCase.query,
@@ -132,10 +143,11 @@ void runConstructQueryTestCase(
             testCase.resultTsv);
   EXPECT_EQ(runQueryStreamableResult(testCase.kg, testCase.query, csv),
             testCase.resultCsv);
-  auto qleverJSONResult = runJSONQuery(testCase.kg, testCase.query, qleverJson);
-  ASSERT_EQ(qleverJSONResult["query"], testCase.query);
-  ASSERT_EQ(qleverJSONResult["resultsize"], testCase.resultSize);
-  EXPECT_EQ(qleverJSONResult["res"], testCase.resultQLeverJSON);
+  auto qleverJSONStreamResult = nlohmann::json::parse(
+      runQueryStreamableResult(testCase.kg, testCase.query, qleverJson));
+  ASSERT_EQ(qleverJSONStreamResult["query"], testCase.query);
+  ASSERT_EQ(qleverJSONStreamResult["resultsize"], testCase.resultSize);
+  EXPECT_EQ(qleverJSONStreamResult["res"], testCase.resultQLeverJSON);
   EXPECT_EQ(runQueryStreamableResult(testCase.kg, testCase.query, turtle),
             testCase.resultTurtle);
 }
@@ -222,6 +234,11 @@ std::vector<IdTable> convertToVector(
   return result;
 }
 
+// match the contents of a `vector<IdTable>` to the given `tables`.
+auto matchesIdTables(const auto&... tables) {
+  return ElementsAre(matchesIdTable(tables)...);
+}
+
 // Template is only required because inner class is not visible
 template <typename T>
 std::vector<IdTable> convertToVector(cppcoro::generator<T> generator) {
@@ -233,6 +250,13 @@ std::vector<IdTable> convertToVector(cppcoro::generator<T> generator) {
   }
   return result;
 }
+
+std::chrono::milliseconds toChrono(std::string_view string) {
+  EXPECT_THAT(string, EndsWith("ms"));
+  return ad_utility::ParseableDuration<std::chrono::milliseconds>::fromString(
+      string);
+}
+}  // namespace
 
 // ____________________________________________________________________________
 TEST(ExportQueryExecutionTrees, Integers) {
@@ -662,6 +686,52 @@ TEST(ExportQueryExecutionTrees, LiteralWithDatatype) {
 }
 
 // ____________________________________________________________________________
+TEST(ExportQueryExecutionTrees, LiteralPlain) {
+  std::string kg = "<s> <p> \"something\"";
+  std::string query = "SELECT ?o WHERE {?s ?p ?o} ORDER BY ?o";
+  std::string expectedXml = makeXMLHeader({"o"}) +
+                            R"(
+  <result>
+    <binding name="o"><literal>something</literal></binding>
+  </result>)" + xmlTrailer;
+  TestCaseSelectQuery testCase{kg, query, 1,
+                               // TSV
+                               "?o\n"
+                               "\"something\"\n",
+                               // CSV
+                               "o\n"
+                               "something\n",
+                               makeExpectedQLeverJSON({"\"something\""s}),
+                               makeExpectedSparqlJSON({makeJSONBinding(
+                                   std::nullopt, "literal", "something")}),
+                               expectedXml};
+  runSelectQueryTestCase(testCase);
+  testCase.kg = "<s> <x> <y>";
+  testCase.query =
+      "SELECT ?o WHERE { VALUES ?o {\"something\"}} "
+      "ORDER BY ?o";
+  runSelectQueryTestCase(testCase);
+
+  TestCaseConstructQuery testCaseConstruct{
+      kg,
+      "CONSTRUCT {?s ?p ?o} WHERE {?s ?p ?o} ORDER BY ?o",
+      1,
+      // TSV
+      "<s>\t<p>\t\"something\"\n",
+      // CSV
+      "<s>,<p>,\"\"\"something\"\"\"\n",
+      // Turtle
+      "<s> <p> \"something\" .\n",
+      []() {
+        nlohmann::json j;
+        j.push_back(std::vector{"<s>"s, "<p>"s, "\"something\""s});
+        return j;
+      }(),
+  };
+  runConstructQueryTestCase(testCaseConstruct);
+}
+
+// ____________________________________________________________________________
 TEST(ExportQueryExecutionTrees, TestWithIriEscaped) {
   std::string kg = "<s> <p> <https://\\u0009:\\u0020)\\u000AtestIriKg>";
   std::string objectQuery = "SELECT ?o WHERE { ?s ?p ?o }";
@@ -983,17 +1053,10 @@ TEST(ExportQueryExecutionTrees, CornerCases) {
   std::string constructQuery =
       "CONSTRUCT {?s ?p ?o} WHERE {?s ?p ?o } ORDER BY ?p ?o";
 
-  // JSON is not streamable.
-  ASSERT_THROW(
-      runQueryStreamableResult(kg, query, ad_utility::MediaType::qleverJson),
-      ad_utility::Exception);
   // Turtle is not supported for SELECT queries.
   ASSERT_THROW(
       runQueryStreamableResult(kg, query, ad_utility::MediaType::turtle),
       ad_utility::Exception);
-  // TSV is not a `JSON` format
-  ASSERT_THROW(runJSONQuery(kg, query, ad_utility::MediaType::tsv),
-               ad_utility::Exception);
   // SPARQL JSON is not supported for construct queries.
   ASSERT_THROW(
       runJSONQuery(kg, constructQuery, ad_utility::MediaType::sparqlJson),
@@ -1035,32 +1098,6 @@ TEST(ExportQueryExecutionTrees, CornerCases) {
 using enum ad_utility::MediaType;
 
 // ____________________________________________________________________________
-
-class JsonMediaTypesFixture
-    : public ::testing::Test,
-      public ::testing::WithParamInterface<ad_utility::MediaType> {};
-
-TEST_P(JsonMediaTypesFixture, CancellationCancelsJson) {
-  auto cancellationHandle =
-      std::make_shared<ad_utility::CancellationHandle<>>();
-
-  auto* qec = ad_utility::testing::getQec(
-      "<s> <p> 42 . <s> <p> -42019234865781 . <s> <p> 4012934858173560");
-  QueryPlanner qp{qec, cancellationHandle};
-  auto pq = SparqlParser::parseQuery("SELECT * WHERE { ?x ?y ?z }");
-  auto qet = qp.createExecutionTree(pq);
-
-  cancellationHandle->cancel(ad_utility::CancellationState::MANUAL);
-  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
-      ExportQueryExecutionTrees::computeResultAsJSON(
-          pq, qet, ad_utility::Timer{ad_utility::Timer::Started}, GetParam(),
-          std::move(cancellationHandle)),
-      HasSubstr("Query export"), ad_utility::CancellationException);
-}
-INSTANTIATE_TEST_SUITE_P(JsonMediaTypes, JsonMediaTypesFixture,
-                         ::testing::Values(sparqlJson, qleverJson));
-
-// ____________________________________________________________________________
 class StreamableMediaTypesFixture
     : public ::testing::Test,
       public ::testing::WithParamInterface<ad_utility::MediaType> {};
@@ -1078,16 +1115,17 @@ TEST_P(StreamableMediaTypesFixture, CancellationCancelsStream) {
   auto qet = qp.createExecutionTree(pq);
 
   cancellationHandle->cancel(ad_utility::CancellationState::MANUAL);
-  auto generator = ExportQueryExecutionTrees::computeResultAsStream(
-      pq, qet, GetParam(), std::move(cancellationHandle));
-
-  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(generator.begin(),
-                                        HasSubstr("Stream query export"),
-                                        ad_utility::CancellationException);
+  ad_utility::Timer timer(ad_utility::Timer::Started);
+  EXPECT_ANY_THROW(([&]() {
+    [[maybe_unused]] auto generator = ExportQueryExecutionTrees::computeResult(
+        pq, qet, GetParam(), timer, std::move(cancellationHandle));
+  }()));
 }
+
 INSTANTIATE_TEST_SUITE_P(StreamableMediaTypes, StreamableMediaTypesFixture,
                          ::testing::Values(turtle, sparqlXml, tsv, csv,
-                                           octetStream));
+                                           octetStream, sparqlJson,
+                                           qleverJson));
 
 // TODO<joka921> Unit tests for the more complex CONSTRUCT export (combination
 // between constants and stuff from the knowledge graph).
@@ -1102,8 +1140,7 @@ TEST(ExportQueryExecutionTrees, getIdTablesReturnsSingletonIterator) {
   Result result{idTable.clone(), {}, LocalVocab{}};
   auto generator = ExportQueryExecutionTrees::getIdTables(result);
 
-  EXPECT_THAT(convertToVector(std::move(generator)),
-              ElementsAre(Eq(std::cref(idTable))));
+  EXPECT_THAT(convertToVector(std::move(generator)), matchesIdTables(idTable));
 }
 
 // _____________________________________________________________________________
@@ -1121,7 +1158,7 @@ TEST(ExportQueryExecutionTrees, getIdTablesMirrorsGenerator) {
   auto generator = ExportQueryExecutionTrees::getIdTables(result);
 
   EXPECT_THAT(convertToVector(std::move(generator)),
-              ElementsAre(Eq(std::cref(idTable1)), Eq(std::cref(idTable2))));
+              matchesIdTables(idTable1, idTable2));
 }
 
 // _____________________________________________________________________________
@@ -1137,7 +1174,7 @@ TEST(ExportQueryExecutionTrees, ensureCorrectSlicingOfSingleIdTable) {
 
   auto referenceTable = makeIdTableFromVector({{2}});
   EXPECT_THAT(convertToVector(std::move(generator)),
-              ElementsAre(Eq(std::cref(referenceTable))));
+              matchesIdTables(referenceTable));
 }
 
 // _____________________________________________________________________________
@@ -1158,7 +1195,7 @@ TEST(ExportQueryExecutionTrees,
   auto referenceTable1 = makeIdTableFromVector({{4}, {5}});
 
   EXPECT_THAT(convertToVector(std::move(generator)),
-              ElementsAre(Eq(std::cref(referenceTable1))));
+              matchesIdTables(referenceTable1));
 }
 
 // _____________________________________________________________________________
@@ -1179,7 +1216,7 @@ TEST(ExportQueryExecutionTrees,
   auto referenceTable1 = makeIdTableFromVector({{1}, {2}, {3}});
 
   EXPECT_THAT(convertToVector(std::move(generator)),
-              ElementsAre(Eq(std::cref(referenceTable1))));
+              matchesIdTables(referenceTable1));
 }
 
 // _____________________________________________________________________________
@@ -1201,8 +1238,7 @@ TEST(ExportQueryExecutionTrees,
   auto referenceTable2 = makeIdTableFromVector({{4}});
 
   EXPECT_THAT(convertToVector(std::move(generator)),
-              ElementsAre(Eq(std::cref(referenceTable1)),
-                          Eq(std::cref(referenceTable2))));
+              matchesIdTables(referenceTable1, referenceTable2));
 }
 
 // _____________________________________________________________________________
@@ -1227,10 +1263,9 @@ TEST(ExportQueryExecutionTrees,
   auto referenceTable2 = makeIdTableFromVector({{4}, {5}});
   auto referenceTable3 = makeIdTableFromVector({{6}, {7}});
 
-  EXPECT_THAT(convertToVector(std::move(generator)),
-              ElementsAre(Eq(std::cref(referenceTable1)),
-                          Eq(std::cref(referenceTable2)),
-                          Eq(std::cref(referenceTable3))));
+  EXPECT_THAT(
+      convertToVector(std::move(generator)),
+      matchesIdTables(referenceTable1, referenceTable2, referenceTable3));
 }
 
 // _____________________________________________________________________________
@@ -1263,6 +1298,108 @@ TEST(ExportQueryExecutionTrees, ensureGeneratorIsNotConsumedWhenNotRequired) {
     IdTable referenceTable1 = makeIdTableFromVector({{1}});
     std::vector<IdTable> tables;
     EXPECT_NO_THROW({ tables = convertToVector(std::move(generator)); });
-    EXPECT_THAT(tables, ElementsAre(Eq(std::cref(referenceTable1))));
+    EXPECT_THAT(tables, matchesIdTables(referenceTable1));
   }
+}
+
+// _____________________________________________________________________________
+TEST(ExportQueryExecutionTrees, verifyQleverJsonContainsValidMetadata) {
+  std::string_view query =
+      "SELECT * WHERE { ?x ?y ?z . FILTER(?y != <p2>) } OFFSET 1 LIMIT 4";
+  auto cancellationHandle =
+      std::make_shared<ad_utility::CancellationHandle<>>();
+
+  auto* qec = ad_utility::testing::getQec(
+      "<s> <p1> 40,41,42,43,44,45,46,47,48,49"
+      " ; <p2> 50,51,52,53,54,55,56,57,58,59");
+  QueryPlanner qp{qec, cancellationHandle};
+  auto pq = SparqlParser::parseQuery(std::string{query});
+  auto qet = qp.createExecutionTree(pq);
+
+  ad_utility::Timer timer{ad_utility::Timer::Started};
+
+  // Verify this is accounted for for time calculation.
+  std::this_thread::sleep_for(1ms);
+
+  auto jsonStream = ExportQueryExecutionTrees::computeResultAsQLeverJSON(
+      pq, qet, timer, std::move(cancellationHandle));
+
+  std::string aggregateString{};
+  for (std::string& chunk : jsonStream) {
+    aggregateString += chunk;
+  }
+  nlohmann::json json = nlohmann::json::parse(aggregateString);
+  auto originalRuntimeInfo = qet.getRootOperation()->runtimeInfo();
+
+  EXPECT_EQ(json["query"], query);
+  EXPECT_EQ(json["status"], "OK");
+  EXPECT_THAT(json["warnings"], ElementsAre());
+  EXPECT_THAT(json["selected"], ElementsAre(Eq("?x"), Eq("?y"), Eq("?z")));
+  EXPECT_EQ(json["res"].size(), 4);
+  auto& runtimeInformationWrapper = json["runtimeInformation"];
+  EXPECT_TRUE(runtimeInformationWrapper.contains("meta"));
+  ASSERT_TRUE(runtimeInformationWrapper.contains("query_execution_tree"));
+  auto& runtimeInformation = runtimeInformationWrapper["query_execution_tree"];
+  EXPECT_EQ(runtimeInformation["result_cols"], 3);
+  EXPECT_EQ(runtimeInformation["result_rows"], 4);
+  EXPECT_EQ(json["resultsize"], 4);
+  auto& timingInformation = json["time"];
+  EXPECT_GE(toChrono(timingInformation["total"].get<std::string_view>()), 1ms);
+  // Ensure result is not returned in microseconds and subsequently interpreted
+  // in milliseconds
+  EXPECT_LT(
+      toChrono(timingInformation["computeResult"].get<std::string_view>()),
+      100ms);
+  EXPECT_GE(
+      toChrono(timingInformation["total"].get<std::string_view>()),
+      toChrono(timingInformation["computeResult"].get<std::string_view>()));
+}
+
+TEST(ExportQueryExecutionTrees, convertGeneratorForChunkedTransfer) {
+  using S = ad_utility::streams::stream_generator;
+  auto throwEarly = []() -> S {
+    co_yield " Hallo... Ups\n";
+    throw std::runtime_error{"failed"};
+  };
+  auto call = [](S stream) {
+    [[maybe_unused]] auto res =
+        ExportQueryExecutionTrees::convertStreamGeneratorForChunkedTransfer(
+            std::move(stream));
+  };
+  AD_EXPECT_THROW_WITH_MESSAGE(call(throwEarly()), std::string_view("failed"));
+  auto throwLate = [](bool throwProperException) -> S {
+    size_t largerThanBufferSize = (1ul << 20) + 4;
+    std::string largerThanBuffer;
+    largerThanBuffer.resize(largerThanBufferSize);
+    co_yield largerThanBuffer;
+    if (throwProperException) {
+      throw std::runtime_error{"proper exception"};
+    } else {
+      throw 424231;
+    }
+  };
+
+  auto consume = [](auto generator) {
+    std::string res;
+    for (const auto& el : generator) {
+      res.append(el);
+    }
+    return res;
+  };
+
+  cppcoro::generator<std::string> res;
+  using namespace ::testing;
+  EXPECT_NO_THROW((
+      res = ExportQueryExecutionTrees::convertStreamGeneratorForChunkedTransfer(
+          throwLate(true))));
+  EXPECT_THAT(consume(std::move(res)),
+              AllOf(HasSubstr("!!!!>># An error has occurred"),
+                    HasSubstr("proper exception")));
+
+  EXPECT_NO_THROW((
+      res = ExportQueryExecutionTrees::convertStreamGeneratorForChunkedTransfer(
+          throwLate(false))));
+  EXPECT_THAT(consume(std::move(res)),
+              AllOf(HasSubstr("!!!!>># An error has occurred"),
+                    HasSubstr("A very strange")));
 }
