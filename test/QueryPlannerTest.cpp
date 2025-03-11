@@ -1,6 +1,7 @@
-// Copyright 2015, University of Freiburg, Chair of Algorithms and Data
-// Structures.
-// Author: Björn Buchhold (buchhold@informatik.uni-freiburg.de)
+// Copyright 2015 - 2024, University of Freiburg
+// Chair of Algorithms and Data Structures
+// Authors: Björn Buchhold <buchhold@cs.uni-freiburg.de> [2015 - 2017]
+//          Johannes Kalmbach <kalmbachqcs.uni-freiburg.de> [2018 - 2024]
 
 #include <gtest/gtest.h>
 
@@ -920,6 +921,7 @@ TEST(QueryPlanner, PathSearchMultipleSourcesAndTargetsCartesian) {
       "}}}}",
       h::PathSearch(config, true, true, scan("?start", "<p>", "?end")), qec);
 }
+
 TEST(QueryPlanner, PathSearchMultipleSourcesAndTargetsNonCartesian) {
   auto scan = h::IndexScanFromStrings;
   auto qec =
@@ -951,6 +953,45 @@ TEST(QueryPlanner, PathSearchMultipleSourcesAndTargetsNonCartesian) {
       "pathSearch:start ?start;"
       "pathSearch:end ?end;"
       "pathSearch:cartesian false;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::PathSearch(config, true, true, scan("?start", "<p>", "?end")), qec);
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, numPathsPerTarget) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec =
+      ad_utility::testing::getQec("<x1> <p> <y>. <x2> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x1>"), getId("<x2>")};
+  std::vector<Id> targets{getId("<y>"), getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {},
+                                 true,
+                                 1};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x1> ;"
+      "pathSearch:source <x2> ;"
+      "pathSearch:target <y> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:numPathsPerTarget 1;"
       "{SELECT * WHERE {"
       "?start <p> ?end."
       "}}}}",
@@ -1483,6 +1524,86 @@ TEST(QueryPlanner, PathSearchUnsupportedAlgorithm) {
       parsedQuery::PathSearchException);
 }
 
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchWrongArgumentCartesian) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:cartesian <false>;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("The parameter 'cartesian' expects a boolean"),
+      parsedQuery::PathSearchException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchWrongArgumentNumPathsPerTarget) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:numPathsPerTarget <five>;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("The parameter 'numPathsPerTarget' expects an integer"),
+      parsedQuery::PathSearchException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchWrongArgumentAlgorithm) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm 1 ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("The 'algorithm' value has to be an Iri"),
+      parsedQuery::PathSearchException);
+}
+
 TEST(QueryPlanner, SpatialJoinViaMaxDistPredicate) {
   auto scan = h::IndexScanFromStrings;
   h::expect(
@@ -1992,4 +2113,38 @@ TEST(QueryPlanner, DatasetClause) {
       h::expect("SELECT * { GRAPH ?x {?x <b> <c>}}", ::testing::_),
       AllOf(HasSubstr("used as the graph specifier"),
             HasSubstr("may not appear in the body")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, WarningsOnUnboundVariables) {
+  using enum ::OrderBy::AscOrDesc;
+  // Unbound variable in ORDER BY.
+  h::expect(
+      "SELECT * {} ORDER BY ?x",
+      h::QetWithWarnings({"?x was used by ORDER BY"}, h::NeutralElement()));
+  h::expect(
+      "SELECT * { ?x <is-a> <y> } ORDER BY ?x ?y ",
+      h::QetWithWarnings({"?y was used by ORDER BY"},
+                         h::OrderBy({{Variable{"?x"}, Asc}}, ::testing::_)));
+
+  // Unbound variable in GROUP BY.
+  h::expect("SELECT ?x {} GROUP BY ?x",
+            h::QetWithWarnings({"?x was used by GROUP BY"},
+                               h::GroupBy({}, {}, h::NeutralElement())));
+  h::expect("SELECT ?x ?y { ?x <is-a> <y> } GROUP BY ?x ?y ",
+            h::QetWithWarnings(
+                {"?y was used by GROUP BY"},
+                h::GroupBy({Variable{"?x"}}, {},
+                           h::IndexScanFromStrings("?x", "<is-a>", "<y>"))));
+
+  // Unbound variable in BIND.
+  h::expect(
+      "SELECT ?x {BIND (?a as ?x)}",
+      h::QetWithWarnings({"?a was used in the expression of a BIND"},
+                         h::Bind(h::NeutralElement(), "?a", Variable{"?x"})));
+
+  // Unbound variable in Subquery.
+  h::expect("SELECT ?x { {SELECT * {BIND (?a as ?x)}} ?x <p> ?o}",
+            h::QetWithWarnings({"?a was used in the expression of a BIND"},
+                               testing::_));
 }
