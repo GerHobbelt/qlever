@@ -24,10 +24,9 @@ using Status = RuntimeInformation::Status;
 
 namespace {
 // Helper function to perform actions at various stages of a generator
-template <typename T>
+template <typename Range, typename T = ql::ranges::range_value_t<Range>>
 auto expectAtEachStageOfGenerator(
-    cppcoro::generator<T> generator,
-    std::vector<std::function<void()>> functions,
+    Range generator, std::vector<std::function<void()>> functions,
     ad_utility::source_location l = ad_utility::source_location::current()) {
   auto locationTrace = generateLocationTrace(l);
   size_t index = 0;
@@ -243,12 +242,12 @@ TEST(OperationTest, estimatesForCachedResults) {
     [[maybe_unused]] auto res = qet->getResult();
   }
   // The result is now cached inside the static execution context, if we create
-  // the same operation again, the cost estimate is 0 and the size estimate is
-  // exact (3 rows).
+  // the same operation again, the cost estimate is 0. The size estimate doesn't
+  // change (see the `getCostEstimate` function for details on why).
   {
     auto qet = makeQet();
     EXPECT_EQ(qet->getCacheKey(), qet->getRootOperation()->getCacheKey());
-    EXPECT_EQ(qet->getSizeEstimate(), 3u);
+    EXPECT_EQ(qet->getSizeEstimate(), 24u);
     EXPECT_EQ(qet->getCostEstimate(), 0u);
   }
 }

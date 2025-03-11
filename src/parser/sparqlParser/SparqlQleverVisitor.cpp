@@ -311,8 +311,8 @@ ParsedQuery Visitor::visit(Parser::DescribeQueryContext* ctx) {
   if (describedResources.empty()) {
     const auto& visibleVariables =
         parsedQuery_.selectClause().getVisibleVariables();
-    std::ranges::copy(visibleVariables,
-                      std::back_inserter(describeClause.resources_));
+    ql::ranges::copy(visibleVariables,
+                     std::back_inserter(describeClause.resources_));
     describedVariables = visibleVariables;
   }
   auto& selectClause = parsedQuery_.selectClause();
@@ -438,7 +438,7 @@ std::optional<Values> Visitor::visit(Parser::ValuesClauseContext* ctx) {
   return visitOptional(ctx->dataBlock());
 }
 
-// ____________________________________________________________________________________
+// ____________________________________________________________________________
 ParsedQuery Visitor::visit(Parser::UpdateContext* ctx) {
   // The prologue (BASE and PREFIX declarations)  only affects the internal
   // state of the visitor.
@@ -446,7 +446,9 @@ ParsedQuery Visitor::visit(Parser::UpdateContext* ctx) {
 
   auto update = visit(ctx->update1());
 
-  if (ctx->update()) {
+  // More than one operation in a single update request is not yet supported,
+  // but a semicolon after a single update is allowed.
+  if (ctx->update() && !ctx->update()->getText().empty()) {
     parsedQuery_ = ParsedQuery{};
     reportNotSupported(ctx->update(), "Multiple updates in one query are");
   }
@@ -1543,6 +1545,7 @@ void Visitor::setMatchingWordAndScoreVisibleIfPresent(
     }
     for (std::string_view s : std::vector<std::string>(
              absl::StrSplit(name.substr(1, name.size() - 2), ' '))) {
+      addVisibleVariable(var->getWordScoreVariable(s, s.ends_with('*')));
       if (!s.ends_with('*')) {
         continue;
       }
@@ -1551,9 +1554,9 @@ void Visitor::setMatchingWordAndScoreVisibleIfPresent(
     }
   } else if (propertyPath->asString() == CONTAINS_ENTITY_PREDICATE) {
     if (const auto* entVar = std::get_if<Variable>(&object)) {
-      addVisibleVariable(var->getScoreVariable(*entVar));
+      addVisibleVariable(var->getEntityScoreVariable(*entVar));
     } else {
-      addVisibleVariable(var->getScoreVariable(object.toSparql()));
+      addVisibleVariable(var->getEntityScoreVariable(object.toSparql()));
     }
   }
 }

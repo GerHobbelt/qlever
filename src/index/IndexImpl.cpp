@@ -71,10 +71,11 @@ IndexBuilderDataAsFirstPermutationSorter IndexImpl::createIdTriplesAndVocab(
 std::unique_ptr<RdfParserBase> IndexImpl::makeRdfParser(
     const std::vector<Index::InputFileSpecification>& files) const {
   auto makeRdfParserImpl =
-      [&files]<int useCtre>() -> std::unique_ptr<RdfParserBase> {
+      [this, &files]<int useCtre>() -> std::unique_ptr<RdfParserBase> {
     using TokenizerT =
         std::conditional_t<useCtre == 1, TokenizerCtre, Tokenizer>;
-    return std::make_unique<RdfMultifileParser<TokenizerT>>(files);
+    return std::make_unique<RdfMultifileParser<TokenizerT>>(
+        files, this->parserBufferSize());
   };
 
   // `callFixedSize` litfts runtime integers to compile time integers. We use it
@@ -683,10 +684,11 @@ auto IndexImpl::convertPartialToGlobalIds(
       for (Buffer::row_reference triple : *triples) {
         transformTriple(triple, *idMap);
       }
-      auto [beginInternal, endInternal] = std::ranges::partition(
-          *triples, [&isQLeverInternalTriple](const auto& row) {
-            return !isQLeverInternalTriple(row);
-          });
+      auto beginInternal =
+          std::partition(triples->begin(), triples->end(),
+                         [&isQLeverInternalTriple](const auto& row) {
+                           return !isQLeverInternalTriple(row);
+                         });
       IdTableStatic<NumColumnsIndexBuilding> internalTriples(
           triples->getAllocator());
       // TODO<joka921> We could leave the partitioned complete block as is,
@@ -694,7 +696,7 @@ auto IndexImpl::convertPartialToGlobalIds(
       // push only a part of a block. We then would safe the copy of the
       // internal triples here, but I am not sure whether this is worth it.
       internalTriples.insertAtEnd(*triples, beginInternal - triples->begin(),
-                                  endInternal - triples->begin());
+                                  triples->end() - triples->begin());
       triples->resize(beginInternal - triples->begin());
 
       Buffers buffers{std::move(*triples), std::move(internalTriples)};
@@ -890,9 +892,9 @@ void IndexImpl::createFromOnDiskIndex(const string& onDiskBase) {
   // `Permutation`class, but we first have to deal with The delta triples for
   // the additional permutations.
   auto setMetadata = [this](const Permutation& p) {
-    deltaTriplesManager().modify([&p](DeltaTriples& deltaTriples) {
+    deltaTriplesManager().modify<void>([&p](DeltaTriples& deltaTriples) {
       deltaTriples.setOriginalMetadata(p.permutation(),
-                                       p.metaData().blockData());
+                                       p.metaData().blockDataShared());
     });
   };
 
@@ -1128,6 +1130,7 @@ void IndexImpl::readConfiguration() {
   loadDataMember("num-subjects", numSubjects_, NumNormalAndInternal{});
   loadDataMember("num-objects", numObjects_, NumNormalAndInternal{});
   loadDataMember("num-triples", numTriples_, NumNormalAndInternal{});
+  loadDataMember("num-non-literals-text-index", nofNonLiteralsInTextIndex_, 0);
 
   // Initialize BlankNodeManager
   uint64_t numBlankNodesTotal;
