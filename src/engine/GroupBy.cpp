@@ -1,14 +1,14 @@
-// Copyright 2018, University of Freiburg,
-// Chair of Algorithms and Data Structures.
-// Author:
-//   2018      Florian Kramer (florian.kramer@mail.uni-freiburg.de)
-//   2020-     Johannes Kalmbach (kalmbach@informatik.uni-freiburg.de)
+// Copyright 2018 - 2025, University of Freiburg
+// Chair of Algorithms and Data Structures
+// Authors: Florian Kramer [2018 - 2020]
+//          Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
 
 #include "engine/GroupBy.h"
 
 #include <absl/strings/str_join.h>
 
 #include "engine/CallFixedSize.h"
+#include "engine/ExistsJoin.h"
 #include "engine/IndexScan.h"
 #include "engine/Join.h"
 #include "engine/LazyGroupBy.h"
@@ -52,6 +52,14 @@ GroupBy::GroupBy(QueryExecutionContext* qec, vector<Variable> groupByVariables,
   ql::ranges::sort(_groupByVariables, std::less<>{}, &Variable::name);
 
   auto sortColumns = computeSortColumns(subtree.get());
+
+  // Aliases are like `BIND`s, which may contain `EXISTS` expressions.
+  for (const auto& alias : _aliases) {
+    subtree = ExistsJoin::addExistsJoinsToSubtree(
+        alias._expression, std::move(subtree), getExecutionContext(),
+        cancellationHandle_);
+  }
+
   _subtree =
       QueryExecutionTree::createSortedTree(std::move(subtree), sortColumns);
 }
@@ -424,10 +432,11 @@ ProtoResult GroupBy::computeResult(bool requestLaziness) {
 }
 
 // _____________________________________________________________________________
-template <int COLS>
-size_t GroupBy::searchBlockBoundaries(
-    const std::invocable<size_t, size_t> auto& onBlockChange,
-    const IdTableView<COLS>& idTable, GroupBlock& currentGroupBlock) const {
+CPP_template_def(int COLS,
+                 typename T)(requires ranges::invocable<T, size_t, size_t>)
+    size_t GroupBy::searchBlockBoundaries(const T& onBlockChange,
+                                          const IdTableView<COLS>& idTable,
+                                          GroupBlock& currentGroupBlock) const {
   size_t blockStart = 0;
 
   for (size_t pos = 0; pos < idTable.size(); pos++) {
@@ -1244,18 +1253,19 @@ GroupBy::HashMapAggregationData<NUM_GROUP_COLUMNS>::getHashEntries(
     hashEntries.push_back(iterator->second);
   }
 
-  auto resizeVectors =
-      []<VectorOfAggregationData T>(
-          T& arg, size_t numberOfGroups,
-          [[maybe_unused]] const HashMapAggregateTypeWithData& info) {
-        if constexpr (std::same_as<typename T::value_type,
-                                   GroupConcatAggregationData>) {
-          arg.resize(numberOfGroups,
-                     GroupConcatAggregationData{info.separator_.value()});
-        } else {
-          arg.resize(numberOfGroups);
-        }
-      };
+  // CPP_template_lambda(capture)(typenames...)(arg)(requires ...)`
+  auto resizeVectors = CPP_template_lambda()(typename T)(
+      T & arg, size_t numberOfGroups,
+      [[maybe_unused]] const HashMapAggregateTypeWithData& info)(
+      requires true) {
+    if constexpr (std::same_as<typename T::value_type,
+                               GroupConcatAggregationData>) {
+      arg.resize(numberOfGroups,
+                 GroupConcatAggregationData{info.separator_.value()});
+    } else {
+      arg.resize(numberOfGroups);
+    }
+  };
 
   // TODO<C++23> use views::enumerate
   auto idx = 0;
@@ -1265,7 +1275,7 @@ GroupBy::HashMapAggregationData<NUM_GROUP_COLUMNS>::getHashEntries(
 
     std::visit(
         [&resizeVectors, &aggregationTypeWithData,
-         numberOfGroups]<VectorOfAggregationData T>(T& arg) {
+         numberOfGroups]<typename T>(T& arg) {
           resizeVectors(arg, numberOfGroups, aggregationTypeWithData);
         },
         aggregation);
@@ -1526,7 +1536,6 @@ Result GroupBy::computeGroupByForHashMapOptimization(
     // NOTE: If the input blocks have very similar or even identical non-empty
     // local vocabs, no deduplication is performed.
     localVocab.mergeWith(std::span{&inputLocalVocab, 1});
-
     // Setup the `EvaluationContext` for this input block.
     sparqlExpression::EvaluationContext evaluationContext(
         *getExecutionContext(), _subtree->getVariableColumns(), inputTable,
@@ -1614,4 +1623,10 @@ GroupBy::getVariableForCountOfSingleAlias() const {
 // _____________________________________________________________________________
 bool GroupBy::isVariableBoundInSubtree(const Variable& variable) const {
   return _subtree->getVariableColumnOrNullopt(variable).has_value();
+}
+
+// _____________________________________________________________________________
+std::unique_ptr<Operation> GroupBy::cloneImpl() const {
+  return std::make_unique<GroupBy>(_executionContext, _groupByVariables,
+                                   _aliases, _subtree->clone());
 }

@@ -65,7 +65,8 @@ SparqlExpression::Ptr makeStrLangTagExpression(SparqlExpression::Ptr child1,
                                                SparqlExpression::Ptr child2);
 
 SparqlExpression::Ptr makeStrExpression(SparqlExpression::Ptr child);
-SparqlExpression::Ptr makeIriOrUriExpression(SparqlExpression::Ptr child);
+SparqlExpression::Ptr makeIriOrUriExpression(SparqlExpression::Ptr child,
+                                             SparqlExpression::Ptr baseIri);
 SparqlExpression::Ptr makeStrlenExpression(SparqlExpression::Ptr child);
 SparqlExpression::Ptr makeSubstrExpression(SparqlExpression::Ptr string,
                                            SparqlExpression::Ptr start,
@@ -81,10 +82,12 @@ SparqlExpression::Ptr makeContainsExpression(SparqlExpression::Ptr child1,
                                              SparqlExpression::Ptr child2);
 SparqlExpression::Ptr makeStrAfterExpression(SparqlExpression::Ptr child1,
                                              SparqlExpression::Ptr child2);
-
+SparqlExpression::Ptr makeMergeRegexPatternAndFlagsExpression(
+    SparqlExpression::Ptr pattern, SparqlExpression::Ptr flags);
 SparqlExpression::Ptr makeReplaceExpression(SparqlExpression::Ptr input,
                                             SparqlExpression::Ptr pattern,
-                                            SparqlExpression::Ptr replacement);
+                                            SparqlExpression::Ptr replacement,
+                                            SparqlExpression::Ptr flags);
 SparqlExpression::Ptr makeStrBeforeExpression(SparqlExpression::Ptr child1,
                                               SparqlExpression::Ptr child2);
 SparqlExpression::Ptr makeLangMatchesExpression(SparqlExpression::Ptr child1,
@@ -103,7 +106,7 @@ SparqlExpression::Ptr makeIfExpression(SparqlExpression::Ptr child1,
                                        SparqlExpression::Ptr child2,
                                        SparqlExpression::Ptr child3);
 
-// Implemented in ConvertToNumeric.cpp
+// Implemented in ConvertToDtypeConstructor.cpp
 SparqlExpression::Ptr makeConvertToIntExpression(SparqlExpression::Ptr child);
 SparqlExpression::Ptr makeConvertToDoubleExpression(
     SparqlExpression::Ptr child);
@@ -111,6 +114,9 @@ SparqlExpression::Ptr makeConvertToDecimalExpression(
     SparqlExpression::Ptr child);
 SparqlExpression::Ptr makeConvertToBooleanExpression(
     SparqlExpression::Ptr child);
+SparqlExpression::Ptr makeConvertToDateTimeExpression(
+    SparqlExpression::Ptr child);
+SparqlExpression::Ptr makeConvertToDateExpression(SparqlExpression::Ptr child);
 
 // Implemented in RdfTermExpressions.cpp
 SparqlExpression::Ptr makeDatatypeExpression(SparqlExpression::Ptr child);

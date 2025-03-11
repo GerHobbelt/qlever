@@ -10,6 +10,7 @@
 
 #include "backports/algorithm.h"
 #include "engine/CallFixedSize.h"
+#include "engine/ExistsJoin.h"
 #include "engine/QueryExecutionTree.h"
 #include "engine/sparqlExpressions/SparqlExpression.h"
 #include "engine/sparqlExpressions/SparqlExpressionGenerators.h"
@@ -28,6 +29,9 @@ Filter::Filter(QueryExecutionContext* qec,
     : Operation(qec),
       _subtree(std::move(subtree)),
       _expression{std::move(expression)} {
+  _subtree = ExistsJoin::addExistsJoinsToSubtree(
+      _expression, std::move(_subtree), getExecutionContext(),
+      cancellationHandle_);
   setPrefilterExpressionForChildren();
 }
 
@@ -235,4 +239,10 @@ size_t Filter::getCostEstimate() {
                  _subtree->getSizeEstimate(),
                  _subtree->getRootOperation()->getPrimarySortKeyVariable())
              .costEstimate;
+}
+
+// _____________________________________________________________________________
+std::unique_ptr<Operation> Filter::cloneImpl() const {
+  return std::make_unique<Filter>(_executionContext, _subtree->clone(),
+                                  _expression);
 }

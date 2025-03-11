@@ -5,11 +5,21 @@
 #include "Bind.h"
 
 #include "engine/CallFixedSize.h"
+#include "engine/ExistsJoin.h"
 #include "engine/QueryExecutionTree.h"
 #include "engine/sparqlExpressions/SparqlExpression.h"
 #include "engine/sparqlExpressions/SparqlExpressionGenerators.h"
 #include "util/ChunkedForLoop.h"
 #include "util/Exception.h"
+
+// _____________________________________________________________________________
+Bind::Bind(QueryExecutionContext* qec,
+           std::shared_ptr<QueryExecutionTree> subtree, parsedQuery::Bind b)
+    : Operation(qec), _subtree(std::move(subtree)), _bind(std::move(b)) {
+  _subtree = ExistsJoin::addExistsJoinsToSubtree(
+      _bind._expression, std::move(_subtree), getExecutionContext(),
+      cancellationHandle_);
+}
 
 // BIND adds exactly one new column
 size_t Bind::getResultWidth() const { return _subtree->getResultWidth() + 1; }
@@ -209,4 +219,9 @@ IdTable Bind::computeExpressionBind(
   std::visit(visitor, std::move(expressionResult));
 
   return idTable;
+}
+
+// _____________________________________________________________________________
+std::unique_ptr<Operation> Bind::cloneImpl() const {
+  return std::make_unique<Bind>(_executionContext, _subtree->clone(), _bind);
 }

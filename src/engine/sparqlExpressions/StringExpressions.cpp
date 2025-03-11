@@ -117,14 +117,36 @@ struct LiftStringFunction {
 
 // IRI or URI
 //
-// 1. Check for `BASE` URL and if it exists, prepend it.
-// 2. What's the correct behavior for non-strings, like `1` or `true`?
+// 1. What's the correct behavior for non-strings, like `1` or `true`?
 //
-// @1: TODO implement `BASE`
-// @2: Only a `LiteralOrIri` or an `Id` from `Vocab`/`LocalVocab` is in
+// @1: Only a `LiteralOrIri` or an `Id` from `Vocab`/`LocalVocab` is in
 // consideration within the `IriOrUriValueGetter`, hence automatically
 // ignores values like `1`, `true`, `Date` etc.
-using IriOrUriExpression = NARY<1, FV<std::identity, IriOrUriValueGetter>>;
+
+const Iri& extractIri(const IdOrLiteralOrIri& litOrIri) {
+  AD_CORRECTNESS_CHECK(std::holds_alternative<LocalVocabEntry>(litOrIri));
+  const auto& baseIriOrUri = std::get<LocalVocabEntry>(litOrIri);
+  AD_CORRECTNESS_CHECK(baseIriOrUri.isIri());
+  return baseIriOrUri.getIri();
+}
+
+[[maybe_unused]] auto applyBaseIfPresent =
+    [](IdOrLiteralOrIri iri, const IdOrLiteralOrIri& base) -> IdOrLiteralOrIri {
+  if (std::holds_alternative<Id>(iri)) {
+    AD_CORRECTNESS_CHECK(std::get<Id>(iri).isUndefined());
+    return iri;
+  }
+  const auto& baseIri = extractIri(base);
+  if (baseIri.empty()) {
+    return iri;
+  }
+  // TODO<RobinTF> Avoid unnecessary string copies because of conversion.
+  return LiteralOrIri{Iri::fromIrirefConsiderBase(
+      extractIri(iri).toStringRepresentation(), baseIri.getBaseIri(false),
+      baseIri.getBaseIri(true))};
+};
+using IriOrUriExpression =
+    NARY<2, FV<decltype(applyBaseIfPresent), IriOrUriValueGetter>>;
 
 // STRLEN
 [[maybe_unused]] auto strlen = [](std::string_view s) {
@@ -338,6 +360,28 @@ auto strBefore = strAfterOrBeforeImpl<false>;
 using StrBeforeExpression =
     StringExpressionImpl<2, LiftStringFunction<decltype(strBefore)>,
                          StringValueGetter>;
+
+[[maybe_unused]] auto mergeFlagsIntoRegex =
+    [](std::optional<std::string> regex,
+       const std::optional<std::string>& flags) -> IdOrLiteralOrIri {
+  if (!flags.has_value() || !regex.has_value()) {
+    return Id::makeUndefined();
+  }
+  auto firstInvalidFlag = flags.value().find_first_not_of("imsu");
+  if (firstInvalidFlag != std::string::npos) {
+    return Id::makeUndefined();
+  }
+
+  // In Google RE2 the flags are directly part of the regex.
+  std::string result =
+      flags.value().empty()
+          ? std::move(regex.value())
+          : absl::StrCat("(?", flags.value(), ":", regex.value() + ")");
+  return toLiteral(std::move(result));
+};
+
+using MergeRegexPatternAndFlagsExpression =
+    StringExpressionImpl<2, decltype(mergeFlagsIntoRegex), StringValueGetter>;
 
 [[maybe_unused]] auto replaceImpl =
     [](std::optional<std::string> input,
@@ -554,8 +598,8 @@ CPP_template(typename T,
 }
 Expr makeStrExpression(Expr child) { return make<StrExpression>(child); }
 
-Expr makeIriOrUriExpression(Expr child) {
-  return make<IriOrUriExpression>(child);
+Expr makeIriOrUriExpression(Expr child, SparqlExpression::Ptr baseIri) {
+  return make<IriOrUriExpression>(child, baseIri);
 }
 
 Expr makeStrlenExpression(Expr child) { return make<StrlenExpression>(child); }
@@ -585,8 +629,14 @@ Expr makeStrAfterExpression(Expr child1, Expr child2) {
 Expr makeStrBeforeExpression(Expr child1, Expr child2) {
   return make<StrBeforeExpression>(child1, child2);
 }
-
-Expr makeReplaceExpression(Expr input, Expr pattern, Expr repl) {
+Expr makeMergeRegexPatternAndFlagsExpression(Expr pattern, Expr flags) {
+  return make<MergeRegexPatternAndFlagsExpression>(pattern, flags);
+}
+Expr makeReplaceExpression(Expr input, Expr pattern, Expr repl, Expr flags) {
+  if (flags) {
+    pattern = makeMergeRegexPatternAndFlagsExpression(std::move(pattern),
+                                                      std::move(flags));
+  }
   return make<ReplaceExpression>(input, pattern, repl);
 }
 Expr makeContainsExpression(Expr child1, Expr child2) {
