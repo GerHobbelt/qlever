@@ -99,11 +99,11 @@ concept VectorOrExpressionResult =
 
 // Convert a `VectorOrExpressionResult` (see above) to a type that is supported
 // by the expression module.
-template <VectorOrExpressionResult T>
-SingleExpressionResult auto toExpressionResult(T vec) {
+CPP_template(typename T)(
+    requires VectorOrExpressionResult<T>) auto toExpressionResult(T vec) {
   if constexpr (SingleExpressionResult<T>) {
     return vec;
-  } else if constexpr (std::convertible_to<T, std::string_view>) {
+  } else if constexpr (ranges::convertible_to<T, std::string_view>) {
     // TODO<joka921> Make a generic testing utility for the string case...
     return IdOrLiteralOrIri{lit(vec)};
   } else {
@@ -157,7 +157,8 @@ requires(!isVectorResult<T>) auto nonVectorResultMatcher(const T& expected) {
 // storing `Ids` which have to be handled using the `matchId` matcher (see
 // above) are all handled correctly.
 auto sparqlExpressionResultMatcher =
-    []<SingleExpressionResult Expected>(const Expected& expected) {
+    []<typename Expected>(const Expected& expected) {
+      CPP_assert(SingleExpressionResult<Expected>);
       if constexpr (isVectorResult<Expected>) {
         auto matcherVec =
             ad_utility::transform(expected, [](const auto& singleExpected) {
@@ -181,49 +182,50 @@ auto clone = [](const auto& x) {
 };
 
 // The implementation of `testNaryExpression` directly below.
-auto testNaryExpressionImpl =
-    [](auto&& makeExpression, SingleExpressionResult auto const& expected,
-       SingleExpressionResult auto const&... operands) {
-      ad_utility::AllocatorWithLimit<Id> alloc{
-          ad_utility::testing::makeAllocator()};
-      VariableToColumnMap map;
-      LocalVocab localVocab;
-      IdTable table{alloc};
+auto testNaryExpressionImpl = [](auto&& makeExpression, auto const& expected,
+                                 auto const&... operands) {
+  CPP_assert(SingleExpressionResult<decltype(expected)> &&
+             (SingleExpressionResult<decltype(operands)> && ...));
+  ad_utility::AllocatorWithLimit<Id> alloc{
+      ad_utility::testing::makeAllocator()};
+  VariableToColumnMap map;
+  LocalVocab localVocab;
+  IdTable table{alloc};
 
-      // Get the size of `operand`: size for a vector, 1 otherwise.
-      auto getResultSize = []<typename T>(const T& operand) -> size_t {
-        if constexpr (isVectorResult<T>) {
-          return operand.size();
-        }
-        return 1;
-      };
+  // Get the size of `operand`: size for a vector, 1 otherwise.
+  auto getResultSize = []<typename T>(const T& operand) -> size_t {
+    if constexpr (isVectorResult<T>) {
+      return operand.size();
+    }
+    return 1;
+  };
 
-      const auto resultSize = [&operands..., &getResultSize]() {
-        if constexpr (sizeof...(operands) == 0) {
-          (void)getResultSize;
-          return 0ul;
-        } else {
-          return std::max({getResultSize(operands)...});
-        }
-      }();
+  const auto resultSize = [&operands..., &getResultSize]() {
+    if constexpr (sizeof...(operands) == 0) {
+      (void)getResultSize;
+      return 0ul;
+    } else {
+      return std::max({getResultSize(operands)...});
+    }
+  }();
 
-      TestContext outerContext;
-      sparqlExpression::EvaluationContext& context = outerContext.context;
-      context._endIndex = resultSize;
+  TestContext outerContext;
+  sparqlExpression::EvaluationContext& context = outerContext.context;
+  context._endIndex = resultSize;
 
-      std::array<SparqlExpression::Ptr, sizeof...(operands)> children{
-          std::make_unique<SingleUseExpression>(
-              ExpressionResult{clone(operands)})...};
+  std::array<SparqlExpression::Ptr, sizeof...(operands)> children{
+      std::make_unique<SingleUseExpression>(
+          ExpressionResult{clone(operands)})...};
 
-      auto expressionPtr = std::apply(makeExpression, std::move(children));
-      auto& expression = *expressionPtr;
+  auto expressionPtr = std::apply(makeExpression, std::move(children));
+  auto& expression = *expressionPtr;
 
-      ExpressionResult result = expression.evaluate(&context);
+  ExpressionResult result = expression.evaluate(&context);
 
-      using ExpectedType = std::decay_t<decltype(expected)>;
-      ASSERT_THAT(result, ::testing::VariantWith<ExpectedType>(
-                              sparqlExpressionResultMatcher(expected)));
-    };
+  using ExpectedType = std::decay_t<decltype(expected)>;
+  ASSERT_THAT(result, ::testing::VariantWith<ExpectedType>(
+                          sparqlExpressionResultMatcher(expected)));
+};
 
 // Assert that the given `NaryExpression` with the given `operands` has the
 // `expected` result.
@@ -239,10 +241,11 @@ auto testNaryExpression = [](auto&& makeExpression,
 // in both orders of the operands `op1` and `op2`.
 template <auto makeFunction>
 auto testBinaryExpressionCommutative =
-    [](const SingleExpressionResult auto& expected,
-       const SingleExpressionResult auto& op1,
-       const SingleExpressionResult auto& op2,
+    [](const auto& expected, const auto& op1, const auto& op2,
        source_location l = source_location::current()) {
+      CPP_assert(SingleExpressionResult<decltype(expected)> &&
+                 SingleExpressionResult<decltype(op1)> &&
+                 SingleExpressionResult<decltype(op2)>);
       auto t = generateLocationTrace(l);
       testNaryExpression(makeFunction, expected, op1, op2);
       testNaryExpression(makeFunction, expected, op2, op1);
@@ -1090,16 +1093,25 @@ TEST(SparqlExpression, testToNumericExpression) {
   Id G = Id::makeFromGeoPoint(GeoPoint(50.0, 50.0));
   auto checkGetInt = testUnaryExpression<&makeConvertToIntExpression>;
   auto checkGetDouble = testUnaryExpression<&makeConvertToDoubleExpression>;
+  auto chekGetDecimal = testUnaryExpression<&makeConvertToDecimalExpression>;
 
-  checkGetInt(idOrLitOrStringVec({U, "  -1275", "5.97", "-78.97", "-5BoB6",
-                                  "FreBurg1", "", " .", " 42\n", " 0.01 ", "",
-                                  "@", "@?+1", "1", G}),
-              Ids{U, I(-1275), U, U, U, U, U, U, I(42), U, U, U, U, I(1), U});
+  checkGetInt(
+      idOrLitOrStringVec({U, "  -1275", "5.97", "-78.97", "-5BoB6", "FreBurg1",
+                          "", " .", " 42\n", " 0.01 ", "", "@", "@?+1", "1", G,
+                          "+42"}),
+      Ids{U, I(-1275), U, U, U, U, U, U, I(42), U, U, U, U, I(1), U, I(42)});
   checkGetDouble(
       idOrLitOrStringVec({U, "-122.2", "19,96", " 128789334.345 ", "-0.f",
-                          "  0.007 ", " -14.75 ", "Q", "@!+?", "1", G}),
+                          "  0.007 ", " -14.75 ", "Q", "@!+?", "1", G, "+42.0",
+                          " +1E-2", "1e3 ", "1.3E1"}),
       Ids{U, D(-122.2), U, D(128789334.345), U, D(0.007), D(-14.75), U, U,
-          D(1.00), U});
+          D(1.00), U, D(42), D(0.01), D(1000), D(13)});
+  chekGetDecimal(
+      idOrLitOrStringVec({U, "-122.2", "19,96", " 128789334.345 ", "-0.f",
+                          "  0.007 ", " -14.75 ", "Q", "@!+?", "1", G, "+42.0",
+                          " +1E-2", "1e3 ", "1.3E1"}),
+      Ids{U, D(-122.2), U, D(128789334.345), U, D(0.007), D(-14.75), U, U,
+          D(1.00), U, D(42), U, U, U});
   checkGetInt(idOrLitOrStringVec(
                   {U, I(-12475), I(42), I(0), D(-14.57), D(33.0), D(0.00001)}),
               Ids{U, I(-12475), I(42), I(0), I(-14), I(33), I(0)});
@@ -1107,12 +1119,49 @@ TEST(SparqlExpression, testToNumericExpression) {
       idOrLitOrStringVec(
           {U, I(-12475), I(42), I(0), D(-14.57), D(33.0), D(0.00001)}),
       Ids{U, D(-12475.00), D(42.00), D(0.00), D(-14.57), D(33.00), D(0.00001)});
+  chekGetDecimal(
+      idOrLitOrStringVec(
+          {U, I(-12475), I(42), I(0), D(-14.57), D(33.0), D(0.00001)}),
+      Ids{U, D(-12475.00), D(42.00), D(0.00), D(-14.57), D(33.00), D(0.00001)});
   checkGetDouble(IdOrLiteralOrIriVec{lit("."), lit("-12.745"), T, F,
+                                     lit("0.003"), lit("1")},
+                 Ids{U, D(-12.745), D(1.00), D(0.00), D(0.003), D(1.00)});
+  chekGetDecimal(IdOrLiteralOrIriVec{lit("."), lit("-12.745"), T, F,
                                      lit("0.003"), lit("1")},
                  Ids{U, D(-12.745), D(1.00), D(0.00), D(0.003), D(1.00)});
   checkGetInt(IdOrLiteralOrIriVec{lit("."), lit("-12.745"), T, F, lit(".03"),
                                   lit("1"), lit("-33")},
               Ids{U, U, I(1), I(0), U, I(1), I(-33)});
+}
+
+// ____________________________________________________________________________
+TEST(SparqlExpression, testToBooleanExpression) {
+  Id T = Id::makeFromBool(true);
+  Id F = Id::makeFromBool(false);
+  auto checkGetBoolean = testUnaryExpression<&makeConvertToBooleanExpression>;
+
+  checkGetBoolean(
+      IdOrLiteralOrIriVec(
+          {sparqlExpression::detail::LiteralOrIri{
+               iri("<http://example.org/z>")},
+           lit("string"), lit("-10.2E3"), lit("+33.3300"), lit("0.0"), lit("0"),
+           lit("0E1"), lit("1.5"), lit("1"), lit("1E0"), lit("13"),
+           lit("2002-10-10T17:00:00Z"), lit("false"), lit("true"), T, F,
+           lit("0", absl::StrCat("^^<", XSD_PREFIX.second, "boolean>")), I(0),
+           I(1), I(-1), D(0.0), D(1.0), D(-1.0),
+           // The SPARQL compliance tests for the boolean conversion functions
+           // mandate that xds:boolean("0E1") is undefined, but
+           // xsd:boolean("0E1"^^xsd:float) is false. The code currently returns
+           // undefined in both cases, which is fine, because the SPARQL parser
+           // converts the latter into an actual float literal.
+           lit("0E1", absl::StrCat("^^<", XSD_PREFIX.second, "float>")),
+           lit("1E0", absl::StrCat("^^<", XSD_PREFIX.second, "float>")),
+           lit("1.25", absl::StrCat("^^<", XSD_PREFIX.second, "float>")),
+           lit("-7.875", absl::StrCat("^^<", XSD_PREFIX.second, "float>"))}),
+      Ids{U, U, U, U, U, F, U, U, T, U, U, U, F, T,
+          T, F, F, F, T, T, F, T, T, U, U, U, U});
+
+  checkGetBoolean(IdOrLiteralOrIriVec({Id::makeUndefined()}), Ids{U});
 }
 
 // ____________________________________________________________________________
@@ -1242,6 +1291,16 @@ TEST(SparqlExpression, ReplaceExpression) {
       idOrLitOrStringVec({"null", "Xs", "zwei", "drei", U, U}),
       std::tuple{idOrLitOrStringVec({"null", "eins", "zwei", "drei", U, U}),
                  IdOrLiteralOrIri{lit("e.[a-z]")}, IdOrLiteralOrIri{lit("X")}});
+  // A regex with replacement with substitutions
+  checkReplace(idOrLitOrStringVec({R"("$1 \\2 A \\bc")", R"("$1 \\2 DE \\f")"}),
+               std::tuple{idOrLitOrStringVec({"Abc", "DEf"}),
+                          IdOrLiteralOrIri{lit("([A-Z]+)")},
+                          IdOrLiteralOrIri{lit(R"("\\$1 \\2 $1 \\")")}});
+
+  checkReplace(idOrLitOrStringVec({"truebc", "truef"}),
+               std::tuple{idOrLitOrStringVec({"Abc", "DEf"}),
+                          IdOrLiteralOrIri{lit("([A-Z]+)")},
+                          IdOrLiteralOrIri{Id::makeFromBool(true)}});
 
   // Case-insensitive matching using the hack for google regex:
   checkReplace(idOrLitOrStringVec({"null", "xxns", "zwxx", "drxx"}),
