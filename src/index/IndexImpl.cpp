@@ -6,7 +6,6 @@
 
 #include "./IndexImpl.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <future>
 #include <numeric>
@@ -16,6 +15,7 @@
 #include "CompilationInfo.h"
 #include "Index.h"
 #include "absl/strings/str_join.h"
+#include "backports/algorithm.h"
 #include "engine/AddCombinedRowToTable.h"
 #include "engine/CallFixedSize.h"
 #include "index/IndexFormatVersion.h"
@@ -151,7 +151,7 @@ auto fixBlockAfterPatternJoin(auto block) {
   static constexpr auto permutation =
       makePermutationFirstThirdSwitched<NumColumnsIndexBuilding + 2>();
   block.value().setColumnSubset(permutation);
-  std::ranges::for_each(
+  ql::ranges::for_each(
       block.value().getColumn(ADDITIONAL_COLUMN_INDEX_OBJECT_PATTERN),
       [](Id& id) { id = id.isUndefined() ? Id::makeFromInt(NO_PATTERN) : id; });
   return std::move(block.value()).template toStatic<0>();
@@ -202,7 +202,7 @@ IndexImpl::buildOspWithPatterns(
             }
             queue.push(std::move(table));
           } else {
-            outputBufferTable.insertAtEnd(table.begin(), table.end());
+            outputBufferTable.insertAtEnd(table);
             if (outputBufferTable.size() >= bufferSize) {
               queue.push(std::move(outputBufferTable));
               outputBufferTable.clear();
@@ -322,7 +322,7 @@ void IndexImpl::updateInputFileSpecificationsAndLog(
   // For a single input stream, show the name and whether we parse in parallel.
   // For multiple input streams, only show the number of streams.
   if (spec.size() == 1) {
-    AD_LOG_INFO << "Parsing triples from single input stream "
+    AD_LOG_INFO << "Processing triples from single input stream "
                 << spec.at(0).filename_ << " (parallel = "
                 << (spec.at(0).parseInParallel_ ? "true" : "false") << ") ..."
                 << std::endl;
@@ -612,6 +612,8 @@ auto IndexImpl::convertPartialToGlobalIds(
   auto& result = *resultPtr;
   auto& internalResult = *internalTriplesPtr;
   auto triplesGenerator = data.getRows();
+  // static_assert(!std::is_const_v<decltype(triplesGenerator)>);
+  // static_assert(std::is_const_v<decltype(triplesGenerator)>);
   auto it = triplesGenerator.begin();
   using Buffer = IdTableStatic<NumColumnsIndexBuilding>;
   struct Buffers {
@@ -674,30 +676,31 @@ auto IndexImpl::convertPartialToGlobalIds(
   auto getLookupTask = [&isQLeverInternalTriple, &writeQueue, &transformTriple,
                         &getWriteTask](Buffer triples,
                                        std::shared_ptr<Map> idMap) {
-    return
-        [&isQLeverInternalTriple, &writeQueue,
-         triples = std::make_shared<Buffer>(std::move(triples)),
-         idMap = std::move(idMap), &getWriteTask, &transformTriple]() mutable {
-          for (Buffer::row_reference triple : *triples) {
-            transformTriple(triple, *idMap);
-          }
-          auto [beginInternal, endInternal] = std::ranges::partition(
-              *triples, [&isQLeverInternalTriple](const auto& row) {
-                return !isQLeverInternalTriple(row);
-              });
-          IdTableStatic<NumColumnsIndexBuilding> internalTriples(
-              triples->getAllocator());
-          // TODO<joka921> We could leave the partitioned complete block as is,
-          // and change the interface of the compressed sorters s.t. we can
-          // push only a part of a block. We then would safe the copy of the
-          // internal triples here, but I am not sure whether this is worth it.
-          internalTriples.insertAtEnd(beginInternal, endInternal);
-          triples->resize(beginInternal - triples->begin());
+    return [&isQLeverInternalTriple, &writeQueue,
+            triples = std::make_shared<Buffer>(std::move(triples)),
+            idMap = std::move(idMap), &getWriteTask,
+            &transformTriple]() mutable {
+      for (Buffer::row_reference triple : *triples) {
+        transformTriple(triple, *idMap);
+      }
+      auto [beginInternal, endInternal] = std::ranges::partition(
+          *triples, [&isQLeverInternalTriple](const auto& row) {
+            return !isQLeverInternalTriple(row);
+          });
+      IdTableStatic<NumColumnsIndexBuilding> internalTriples(
+          triples->getAllocator());
+      // TODO<joka921> We could leave the partitioned complete block as is,
+      // and change the interface of the compressed sorters s.t. we can
+      // push only a part of a block. We then would safe the copy of the
+      // internal triples here, but I am not sure whether this is worth it.
+      internalTriples.insertAtEnd(*triples, beginInternal - triples->begin(),
+                                  endInternal - triples->begin());
+      triples->resize(beginInternal - triples->begin());
 
-          Buffers buffers{std::move(*triples), std::move(internalTriples)};
+      Buffers buffers{std::move(*triples), std::move(internalTriples)};
 
-          writeQueue.push(getWriteTask(std::move(buffers)));
-        };
+      writeQueue.push(getWriteTask(std::move(buffers)));
+    };
   };
 
   std::atomic<size_t> nextPartialVocabulary = 0;
@@ -781,7 +784,7 @@ IndexImpl::createPermutationPairImpl(size_t numColumns, const string& fileName1,
   // blocks.
   auto liftCallback = [](auto callback) {
     return [callback](const auto& block) mutable {
-      std::ranges::for_each(block, callback);
+      ql::ranges::for_each(block, callback);
     };
   };
   auto callback1 =
@@ -881,14 +884,33 @@ void IndexImpl::createFromOnDiskIndex(const string& onDiskBase) {
            range2.contain(id.getVocabIndex());
   };
 
-  pso_.loadFromDisk(onDiskBase_, isInternalId, true);
-  pos_.loadFromDisk(onDiskBase_, isInternalId, true);
+  // Load the permutations and register the original metadata for the delta
+  // triples.
+  // TODO<joka921> We could delegate the setting of the metadata to the
+  // `Permutation`class, but we first have to deal with The delta triples for
+  // the additional permutations.
+  auto setMetadata = [this](const Permutation& p) {
+    deltaTriplesManager().modify([&p](DeltaTriples& deltaTriples) {
+      deltaTriples.setOriginalMetadata(p.permutation(),
+                                       p.metaData().blockData());
+    });
+  };
 
+  auto load = [this, &isInternalId, &setMetadata](
+                  Permutation& permutation,
+                  bool loadInternalPermutation = false) {
+    permutation.loadFromDisk(onDiskBase_, isInternalId,
+                             loadInternalPermutation);
+    setMetadata(permutation);
+  };
+
+  load(pso_, true);
+  load(pos_, true);
   if (loadAllPermutations_) {
-    ops_.loadFromDisk(onDiskBase_, isInternalId);
-    osp_.loadFromDisk(onDiskBase_, isInternalId);
-    spo_.loadFromDisk(onDiskBase_, isInternalId);
-    sop_.loadFromDisk(onDiskBase_, isInternalId);
+    load(ops_);
+    load(osp_);
+    load(spo_);
+    load(sop_);
   } else {
     AD_LOG_INFO
         << "Only the PSO and POS permutation were loaded, SPARQL queries "
@@ -1303,7 +1325,7 @@ void IndexImpl::readIndexBuilderSettingsFromFile() {
       turtleParserIntegerOverflowBehavior_ =
           TurtleParserIntegerOverflowBehavior::OverflowingToDouble;
     } else {
-      AD_CONTRACT_CHECK(std::ranges::find(allModes, value) == allModes.end());
+      AD_CONTRACT_CHECK(ql::ranges::find(allModes, value) == allModes.end());
       AD_LOG_ERROR << "Invalid value for " << key << std::endl;
       AD_LOG_INFO << "The currently supported values are "
                   << absl::StrJoin(allModes, ",") << std::endl;
