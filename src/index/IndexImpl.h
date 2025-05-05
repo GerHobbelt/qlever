@@ -257,7 +257,8 @@ class IndexImpl {
 
   // Creates an index object from an on disk index that has previously been
   // constructed. Read necessary meta data into memory and opens file handles.
-  void createFromOnDiskIndex(const string& onDiskBase);
+  void createFromOnDiskIndex(const string& onDiskBase,
+                             bool persistUpdatesOnDisk);
 
   // Adds a text index to a complete KB index. Reads words from the given
   // wordsfile and calculates bm25 scores with the docsfile if given.
@@ -265,7 +266,7 @@ class IndexImpl {
   // with only words or only docsfile, but with or without both. Also can't be
   // called with the pair empty and bool false
   void buildTextIndexFile(
-      std::optional<std::pair<string, string>> wordsAndDocsFile,
+      const std::optional<std::pair<string, string>>& wordsAndDocsFile,
       bool addWordsFromLiterals);
 
   // Build docsDB file from given file (one text record per line).
@@ -446,9 +447,8 @@ class IndexImpl {
                                              float b, float k);
 
   const string& getTextName() const { return textMeta_.getName(); }
-
   const string& getKbName() const { return pso_.getKbName(); }
-
+  const string& getOnDiskBase() const { return onDiskBase_; }
   const string& getIndexId() const { return indexId_; }
 
   size_t getNofTextRecords() const { return textMeta_.getNofTextRecords(); }
@@ -555,8 +555,8 @@ class IndexImpl {
       ad_utility::HashMap<WordIndex, Score>& wordsInContext,
       ScoreData& scoreData) const;
 
-  void logEntityNotFound(const string& word,
-                         size_t& entityNotFoundErrorMsgCount) const;
+  static void logEntityNotFound(const string& word,
+                                size_t& entityNotFoundErrorMsgCount);
 
   size_t processWordsForVocabulary(const string& contextFile,
                                    bool addWordsFromLiterals);

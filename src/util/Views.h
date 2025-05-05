@@ -370,7 +370,6 @@ CPP_template(typename Range, typename ElementType)(
     co_yield std::span{buffer.data(), buffer.size()};
   }
 }
-
 }  // namespace ad_utility
 
 // Enabling of "borrowed" ranges for `OwningView`.
