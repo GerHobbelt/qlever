@@ -2104,9 +2104,10 @@ TEST(GroupBy, AddedHavingRows) {
       "SELECT ?x (COUNT(?y) as ?count) WHERE {"
       " VALUES (?x ?y) {(0 1) (0 3) (0 5) (1 4) (1 3) } }"
       "GROUP BY ?x HAVING (?count > 2)";
-  auto pq = SparqlParser::parseQuery(query);
-  QueryPlanner qp{ad_utility::testing::getQec(),
-                  std::make_shared<ad_utility::CancellationHandle<>>()};
+  auto qec = ad_utility::testing::getQec();
+  auto pq =
+      SparqlParser::parseQuery(&qec->getIndex().encodedIriManager(), query);
+  QueryPlanner qp{qec, std::make_shared<ad_utility::CancellationHandle<>>()};
   auto tree = qp.createExecutionTree(pq);
 
   auto res = tree.getResult();
@@ -2292,6 +2293,62 @@ TEST(GroupBy, countDistinctGraph) {
 
   auto result = groupBy.computeResultOnlyForTesting(false);
   EXPECT_EQ(result.idTable(), makeIdTableFromVector({{Id::makeFromInt(1)}}));
+}
+
+// _____________________________________________________________________________
+TEST(GroupBy, strOnGroupedVariableWorks) {
+  // This is a regression test for
+  // https://github.com/ad-freiburg/qlever/issues/2349
+  auto* qec = getQec();
+  std::vector<IdTable> idTables;
+  idTables.push_back(makeIdTableFromVector({{1}}, &Id::makeFromInt));
+  idTables.push_back(makeIdTableFromVector({{2}, {2}, {3}}, &Id::makeFromInt));
+  auto subtree = makeExecutionTree<ValuesForTesting>(
+      qec, std::move(idTables),
+      std::vector<std::optional<Variable>>{Variable{"?x"}}, true,
+      std::vector<ColumnIndex>{0});
+
+  Alias alias{SparqlExpressionPimpl{
+                  makeStrExpression(
+                      std::make_unique<VariableExpression>(Variable{"?x"})),
+                  "STR(?x) as ?y"},
+              Variable{"?y"}};
+  GroupBy groupBy{
+      qec, {Variable{"?x"}}, {std::move(alias)}, std::move(subtree)};
+
+  auto result = groupBy.computeResultOnlyForTesting(true);
+  ASSERT_FALSE(result.isFullyMaterialized());
+
+  std::vector<Result::IdTableVocabPair> resultPairs;
+  for (auto& pair : result.idTables()) {
+    resultPairs.push_back(std::move(pair));
+  }
+
+  ASSERT_EQ(resultPairs.size(), 2);
+  const auto& [idTable0, localVocab0] = resultPairs.at(0);
+  EXPECT_EQ(localVocab0.size(), 2);
+  auto localVocabIndex0 = localVocab0.getIndexOrNullopt(
+      LocalVocabEntry::fromStringRepresentation("\"1\""));
+  ASSERT_TRUE(localVocabIndex0.has_value());
+  auto localVocabIndex1 = localVocab0.getIndexOrNullopt(
+      LocalVocabEntry::fromStringRepresentation("\"2\""));
+  ASSERT_TRUE(localVocabIndex1.has_value());
+  EXPECT_EQ(idTable0,
+            makeIdTableFromVector(
+                {{Id::makeFromInt(1),
+                  Id::makeFromLocalVocabIndex(localVocabIndex0.value())},
+                 {Id::makeFromInt(2),
+                  Id::makeFromLocalVocabIndex(localVocabIndex1.value())}}));
+
+  const auto& [idTable1, localVocab1] = resultPairs.at(1);
+  EXPECT_EQ(localVocab1.size(), 1);
+  auto localVocabIndex2 = localVocab1.getIndexOrNullopt(
+      LocalVocabEntry::fromStringRepresentation("\"3\""));
+  ASSERT_TRUE(localVocabIndex2.has_value());
+  EXPECT_EQ(idTable1,
+            makeIdTableFromVector(
+                {{Id::makeFromInt(3),
+                  Id::makeFromLocalVocabIndex(localVocabIndex2.value())}}));
 }
 
 namespace {

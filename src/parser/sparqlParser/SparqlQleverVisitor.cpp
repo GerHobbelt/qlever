@@ -31,11 +31,13 @@
 #include "engine/sparqlExpressions/SparqlExpression.h"
 #include "engine/sparqlExpressions/StdevExpression.h"
 #include "engine/sparqlExpressions/UuidExpressions.h"
+#include "generated/SparqlAutomaticParser.h"
 #include "global/Constants.h"
 #include "global/RuntimeParameters.h"
 #include "parser/GraphPatternOperation.h"
 #include "parser/MagicServiceIriConstants.h"
 #include "parser/MagicServiceQuery.h"
+#include "parser/NamedCachedResult.h"
 #include "parser/Quads.h"
 #include "parser/RdfParser.h"
 #include "parser/SparqlParser.h"
@@ -383,20 +385,28 @@ Alias Visitor::visit(Parser::AliasWithoutBracketsContext* ctx) {
 
 // ____________________________________________________________________________________
 parsedQuery::BasicGraphPattern Visitor::toGraphPattern(
-    const ad_utility::sparql_types::Triples& triples) {
+    const ad_utility::sparql_types::Triples& triples) const {
   parsedQuery::BasicGraphPattern pattern{};
   pattern._triples.reserve(triples.size());
-  auto toTripleComponent = [](const auto& item) {
+  auto toTripleComponent = [this](const auto& item) {
     using T = std::decay_t<decltype(item)>;
     namespace tc = ad_utility::triple_component;
-    if constexpr (ad_utility::isSimilar<T, Variable>) {
+    if constexpr (ad_utility::SimilarToAny<T, Variable, TripleComponent>) {
       return TripleComponent{item};
     } else if constexpr (ad_utility::isSimilar<T, BlankNode>) {
       // Blank Nodes in the pattern are to be treated as internal variables
       // inside WHERE.
       return TripleComponent{blankNodeToInternalVariable(item.toSparql())};
+    } else if constexpr (ad_utility::isSimilar<T, Iri>) {
+      // Try to encode the IRI first, otherwise use the standard conversion
+      auto iriString = item.toSparql();
+      if (auto encodedId = encodedIriManager_->encode(iriString)) {
+        return TripleComponent{*encodedId};
+      }
+      return RdfStringParser<TurtleParser<Tokenizer>>::parseTripleObject(
+          iriString);
     } else {
-      static_assert(ad_utility::SimilarToAny<T, Literal, Iri>);
+      static_assert(ad_utility::isSimilar<T, Literal>);
       return RdfStringParser<TurtleParser<Tokenizer>>::parseTripleObject(
           item.toSparql());
     }
@@ -1160,14 +1170,15 @@ BasicGraphPattern Visitor::visit(Parser::TriplesBlockContext* ctx) {
     }
   };
   auto convertAndRegisterTriple =
-      [&registerIfVariable](
-          const TripleWithPropertyPath& triple) -> SparqlTriple {
+      [&registerIfVariable,
+       this](const TripleWithPropertyPath& triple) -> SparqlTriple {
     registerIfVariable(triple.subject_);
     registerIfVariable(triple.predicate_);
     registerIfVariable(triple.object_);
 
-    return {triple.subject_.toTripleComponent(), triple.predicate_,
-            triple.object_.toTripleComponent()};
+    return {graphTermToTripleComponentWithEncoding(triple.subject_),
+            triple.predicate_,
+            graphTermToTripleComponentWithEncoding(triple.object_)};
   };
 
   BasicGraphPattern triples = {ad_utility::transform(
@@ -1193,60 +1204,65 @@ GraphPatternOperation Visitor::visit(Parser::OptionalGraphPatternContext* ctx) {
   return GraphPatternOperation{parsedQuery::Optional{std::move(pattern)}};
 }
 
-GraphPatternOperation Visitor::visitPathQuery(
-    Parser::ServiceGraphPatternContext* ctx) {
-  auto parsePathQuery = [](parsedQuery::PathQuery& pathQuery,
-                           const parsedQuery::GraphPatternOperation& op) {
+// _____________________________________________________________________________
+void Visitor::parseBodyOfMagicServiceQuery(
+    parsedQuery::MagicServiceQuery& target,
+    Parser::ServiceGraphPatternContext* ctx, std::string_view operationName) {
+  auto parseGraphPattern = [operationName](
+                               parsedQuery::MagicServiceQuery& pathQuery,
+                               const parsedQuery::GraphPatternOperation& op) {
     if (std::holds_alternative<parsedQuery::BasicGraphPattern>(op)) {
       pathQuery.addBasicPattern(std::get<parsedQuery::BasicGraphPattern>(op));
     } else if (std::holds_alternative<parsedQuery::GroupGraphPattern>(op)) {
       pathQuery.addGraph(op);
     } else {
-      throw parsedQuery::PathSearchException(
-          "Unsupported element in pathSearch."
-          "PathQuery may only consist of triples for configuration"
-          "And a { group graph pattern } specifying edges.");
+      throw std::runtime_error{absl::StrCat(
+          "Unsupported element in a magic service query of type `",
+          operationName,
+          "`. Only triples and `{ group graph patterns }` are allowed ")};
     }
   };
 
   parsedQuery::GraphPattern graphPattern = visit(ctx->groupGraphPattern());
-  parsedQuery::PathQuery pathQuery;
-  for (const auto& op : graphPattern._graphPatterns) {
-    parsePathQuery(pathQuery, op);
+  try {
+    for (const auto& op : graphPattern._graphPatterns) {
+      parseGraphPattern(target, op);
+    }
+  } catch (const std::exception& e) {
+    // Annotate the occurring exceptions with the correct position inside the
+    // query.
+    reportError(ctx->groupGraphPattern(), e.what());
   }
+}
 
+// _____________________________________________________________________________
+GraphPatternOperation Visitor::visitPathQuery(
+    Parser::ServiceGraphPatternContext* ctx) {
+  parsedQuery::PathQuery pathQuery;
+  parseBodyOfMagicServiceQuery(pathQuery, ctx, "path search");
   return pathQuery;
 }
 
+// _____________________________________________________________________________
+GraphPatternOperation Visitor::visitNamedCachedResult(
+    const TripleComponent::Iri& target,
+    Parser::ServiceGraphPatternContext* ctx) {
+  parsedQuery::NamedCachedResult namedQuery{target};
+  parseBodyOfMagicServiceQuery(namedQuery, ctx, "named cached query");
+  return namedQuery;
+}
+
+// _____________________________________________________________________________
 GraphPatternOperation Visitor::visitSpatialQuery(
     Parser::ServiceGraphPatternContext* ctx) {
-  auto parseSpatialQuery = [ctx](parsedQuery::SpatialQuery& spatialQuery,
-                                 const parsedQuery::GraphPatternOperation& op) {
-    if (std::holds_alternative<parsedQuery::BasicGraphPattern>(op)) {
-      spatialQuery.addBasicPattern(
-          std::get<parsedQuery::BasicGraphPattern>(op));
-    } else if (std::holds_alternative<parsedQuery::GroupGraphPattern>(op)) {
-      spatialQuery.addGraph(op);
-    } else {
-      reportError(
-          ctx,
-          "Unsupported element in spatialQuery."
-          "spatialQuery may only consist of triples for configuration"
-          "And a { group graph pattern } specifying the right join table.");
-    }
-  };
-
-  parsedQuery::GraphPattern graphPattern = visit(ctx->groupGraphPattern());
   parsedQuery::SpatialQuery spatialQuery;
-  for (const auto& op : graphPattern._graphPatterns) {
-    parseSpatialQuery(spatialQuery, op);
-  }
+  parseBodyOfMagicServiceQuery(spatialQuery, ctx, "spatial join");
 
   try {
     // We convert the spatial query to a spatial join configuration and discard
     // its result here to detect errors early and report them to the user with
     // highlighting. It's only a small struct so not much is wasted.
-    spatialQuery.toSpatialJoinConfiguration();
+    [[maybe_unused]] auto&& _ = spatialQuery.toSpatialJoinConfiguration();
   } catch (const std::exception& ex) {
     reportError(ctx, ex.what());
   }
@@ -1256,25 +1272,8 @@ GraphPatternOperation Visitor::visitSpatialQuery(
 
 GraphPatternOperation Visitor::visitTextSearchQuery(
     Parser::ServiceGraphPatternContext* ctx) {
-  auto parseTextSearchQuery =
-      [ctx](parsedQuery::TextSearchQuery& textSearchQuery,
-            const parsedQuery::GraphPatternOperation& op) {
-        if (std::holds_alternative<parsedQuery::BasicGraphPattern>(op)) {
-          textSearchQuery.addBasicPattern(
-              std::get<parsedQuery::BasicGraphPattern>(op));
-        } else {
-          reportError(
-              ctx,
-              "Unsupported element in textSearchQuery. "
-              "textSearchQuery may only consist of triples for configuration");
-        }
-      };
-
-  parsedQuery::GraphPattern graphPattern = visit(ctx->groupGraphPattern());
   parsedQuery::TextSearchQuery textSearchQuery;
-  for (const auto& op : graphPattern._graphPatterns) {
-    parseTextSearchQuery(textSearchQuery, op);
-  }
+  parseBodyOfMagicServiceQuery(textSearchQuery, ctx, "full text search");
 
   return textSearchQuery;
 }
@@ -1308,6 +1307,9 @@ GraphPatternOperation Visitor::visit(Parser::ServiceGraphPatternContext* ctx) {
     return visitSpatialQuery(ctx);
   } else if (serviceIri.toStringRepresentation() == TEXT_SEARCH_IRI) {
     return visitTextSearchQuery(ctx);
+  } else if (asStringViewUnsafe(serviceIri.getContent())
+                 .starts_with(CACHED_RESULT_WITH_NAME_PREFIX)) {
+    return visitNamedCachedResult(serviceIri, ctx);
   }
   // Parse the body of the SERVICE query. Add the visible variables from the
   // SERVICE clause to the visible variables so far, but also remember them
@@ -2194,9 +2196,14 @@ PropertyPath Visitor::visit(Parser::PathNegatedPropertySetContext* ctx) {
 
 // ____________________________________________________________________________________
 PropertyPath Visitor::visit(Parser::PathOneInPropertySetContext* ctx) {
-  auto iri = ctx->iri() ? visit(ctx->iri()) : a;
   const std::string& text = ctx->getText();
-  AD_CORRECTNESS_CHECK((iri == a) == (text == "a" || text == "^a"));
+  auto iri = [this, &text, ctx]() {
+    if (ctx->iri()) {
+      return visit(ctx->iri());
+    }
+    AD_CORRECTNESS_CHECK(text == "a" || text == "^a");
+    return a;
+  }();
   auto propertyPath = PropertyPath::fromIri(std::move(iri));
   if (text.starts_with("^")) {
     return PropertyPath::makeInverse(propertyPath);
@@ -2584,7 +2591,7 @@ ExpressionPtr Visitor::visit(Parser::PrimaryExpressionContext* ctx) {
       return make_unique<StringLiteralExpression>(tripleComponent.getLiteral());
     } else {
       return make_unique<IdExpression>(
-          tripleComponent.toValueIdIfNotString().value());
+          tripleComponent.toValueIdIfNotString(encodedIriManager_).value());
     }
   } else if (ctx->numericLiteral()) {
     auto integralWrapper = [](int64_t x) {
@@ -3120,4 +3127,32 @@ void SparqlQleverVisitor::visitWhereClause(
   auto [pattern, visibleVariables] = visit(whereClauseContext);
   query._rootGraphPattern = std::move(pattern);
   query.registerVariablesVisibleInQueryBody(visibleVariables);
+}
+
+// _____________________________________________________________________________
+TripleComponent SparqlQleverVisitor::graphTermToTripleComponentWithEncoding(
+    const GraphTerm& graphTerm) const {
+  return graphTerm.visit([this](const auto& element) -> TripleComponent {
+    using T = std::decay_t<decltype(element)>;
+    if constexpr (std::is_same_v<T, Variable>) {
+      return element;
+    } else if constexpr (std::is_same_v<T, Iri>) {
+      // Try to encode the IRI first, otherwise use the standard conversion
+      auto iriString = element.toSparql();
+      if (auto encodedId = encodedIriManager_->encode(iriString)) {
+        return *encodedId;
+      }
+      return RdfStringParser<TurtleParser<TokenizerCtre>>::parseTripleObject(
+          iriString);
+    } else if constexpr (std::is_same_v<T, Literal>) {
+      return RdfStringParser<TurtleParser<TokenizerCtre>>::parseTripleObject(
+          element.toSparql());
+    } else {
+      static_assert(std::is_same_v<T, BlankNode>);
+      const auto& blankNode = element.toSparql();
+      AD_CORRECTNESS_CHECK(blankNode.starts_with("_:"));
+      return Variable{absl::StrCat(QLEVER_INTERNAL_BLANKNODE_VARIABLE_PREFIX,
+                                   blankNode.substr(2))};
+    }
+  });
 }

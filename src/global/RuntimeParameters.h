@@ -64,7 +64,7 @@ inline auto& RuntimeParameters() {
         // set to zero in query planning.
         Bool<"zero-cost-estimate-for-cached-subtree">{false},
         // Maximum size for the body of requests that the server will process.
-        MemorySizeParameter<"request-body-limit">{100_MB},
+        MemorySizeParameter<"request-body-limit">{1_GB},
         // SERVICE operations are not cached by default, but can be enabled
         // which has the downside that the sibling optimization where VALUES are
         // dynamically pushed into `SERVICE` is no longer used.
@@ -104,6 +104,9 @@ inline auto& RuntimeParameters() {
         // The maximum size of the `prefilterBox` for
         // `SpatialJoinAlgorithms::libspatialjoinParse()`.
         SizeT<"spatial-join-prefilter-max-size">{2'500},
+        // Push joins into both children of unions if this leads to a cheaper
+        // cost-estimate.
+        Bool<"enable-distributive-union">{true},
     };
   }();
   return params;

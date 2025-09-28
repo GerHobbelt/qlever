@@ -15,6 +15,7 @@
 #include "engine/sparqlExpressions/SparqlExpressionPimpl.h"
 #include "parser/DatasetClauses.h"
 #include "parser/GraphPattern.h"
+#include "parser/NamedCachedResult.h"
 #include "parser/PathQuery.h"
 #include "parser/SpatialQuery.h"
 #include "parser/TextSearchQuery.h"
@@ -22,7 +23,6 @@
 #include "rdfTypes/Variable.h"
 #include "util/TransparentFunctors.h"
 #include "util/VisitMixin.h"
-#include "util/http/HttpUtils.h"
 
 // First some forward declarations.
 // TODO<joka921> More stuff should consistently be in the `parsedQuery`
@@ -196,7 +196,7 @@ struct Bind {
 using GraphPatternOperationVariant =
     std::variant<Optional, Union, Subquery, TransPath, Bind, BasicGraphPattern,
                  Values, Service, PathQuery, SpatialQuery, TextSearchQuery,
-                 Minus, GroupGraphPattern, Describe, Load>;
+                 Minus, GroupGraphPattern, Describe, Load, NamedCachedResult>;
 struct GraphPatternOperation
     : public GraphPatternOperationVariant,
       public VisitMixin<GraphPatternOperation, GraphPatternOperationVariant> {

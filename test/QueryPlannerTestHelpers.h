@@ -18,6 +18,7 @@
 #include "engine/Describe.h"
 #include "engine/Distinct.h"
 #include "engine/ExistsJoin.h"
+#include "engine/ExplicitIdTableOperation.h"
 #include "engine/Filter.h"
 #include "engine/GroupBy.h"
 #include "engine/IndexScan.h"
@@ -126,11 +127,16 @@ constexpr auto IndexScan =
        const std::vector<Permutation::Enum>& allowedPermutations = {},
        const ScanSpecificationAsTripleComponent::Graphs& graphs = std::nullopt,
        const std::vector<Variable>& additionalVariables = {},
-       const std::vector<ColumnIndex>& additionalColumns = {}) -> QetMatcher {
-  size_t numVariables = static_cast<size_t>(subject.isVariable()) +
-                        static_cast<size_t>(predicate.isVariable()) +
-                        static_cast<size_t>(object.isVariable()) +
-                        additionalColumns.size();
+       const std::vector<ColumnIndex>& additionalColumns = {},
+       const std::optional<size_t>& strippedSize = std::nullopt) -> QetMatcher {
+  // TODO<RobinTF> The matcher should be changed so that numVariables can
+  // properly account for stripped columns. Also `strippedSize` should be
+  // replaced by an explicit listing of the variables that are kept instead of
+  // just the size.
+  size_t numVariables = strippedSize.value_or(
+      static_cast<size_t>(subject.isVariable()) +
+      static_cast<size_t>(predicate.isVariable()) +
+      static_cast<size_t>(object.isVariable()) + additionalColumns.size());
   auto permutationMatcher = allowedPermutations.empty()
                                 ? ::testing::A<Permutation::Enum>()
                                 : AnyOfArray(allowedPermutations);
@@ -254,7 +260,8 @@ inline auto IndexScanFromStrings =
        const std::optional<ad_utility::HashSet<std::string>> graphs =
            std::nullopt,
        const std::vector<Variable>& additionalVariables = {},
-       const std::vector<ColumnIndex>& additionalColumns = {}) -> QetMatcher {
+       const std::vector<ColumnIndex>& additionalColumns = {},
+       const std::optional<size_t>& strippedSize = std::nullopt) -> QetMatcher {
   auto strToComp = [](std::string_view s) -> TripleComponent {
     if (s.starts_with("?")) {
       return ::Variable{std::string{s}};
@@ -273,7 +280,7 @@ inline auto IndexScanFromStrings =
   }
   return IndexScan(strToComp(subject), strToComp(predicate), strToComp(object),
                    allowedPermutations, graphsOut, additionalVariables,
-                   additionalColumns);
+                   additionalColumns, strippedSize);
 };
 
 // For the following Join algorithms the order of the children is not
@@ -480,6 +487,16 @@ inline QetMatcher ExistsJoin(const QetMatcher& leftChild,
   return RootOperation<::ExistsJoin>(AllOf(children(leftChild, rightChild)));
 }
 
+// Match an `ExplicitIdTableOperation`, but only test its size estimate (which
+// is equal to the actual number of rows in the result). More detailed tests for
+// this operation can be found in `ExplicitIdTableOperationTest.cpp` and
+// `NamedResultCacheTest.cpp`.
+inline QetMatcher ExplicitIdTableOperation(size_t sizeEstimate) {
+  auto p = AD_PROPERTY(::ExplicitIdTableOperation, sizeEstimate,
+                       ::testing::Eq(sizeEstimate));
+  return RootOperation<::ExplicitIdTableOperation>(p);
+}
+
 //
 inline QetMatcher QetWithWarnings(
     const std::vector<std::string>& warningSubstrings,
@@ -571,12 +588,16 @@ class QueryPlannerWithMockFilterSubstitute : public QueryPlanner {
 template <typename QueryPlannerClass = QueryPlanner>
 inline QueryExecutionTree parseAndPlan(std::string query,
                                        QueryExecutionContext* qec) {
-  ParsedQuery pq = SparqlParser::parseQuery(std::move(query));
+  static EncodedIriManager ev;
+  ParsedQuery pq = SparqlParser::parseQuery(&ev, std::move(query));
   // TODO<joka921> make it impossible to pass `nullptr` here, properly mock
   // a queryExecutionContext.
-  return QueryPlannerClass{qec,
-                           std::make_shared<ad_utility::CancellationHandle<>>()}
-      .createExecutionTree(pq);
+  auto tree =
+      QueryPlannerClass{qec,
+                        std::make_shared<ad_utility::CancellationHandle<>>()}
+          .createExecutionTree(pq);
+  tree.isRoot() = true;
+  return tree;
 }
 
 // Check that the `QueryExecutionTree` that is obtained by parsing and
