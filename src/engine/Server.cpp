@@ -20,6 +20,7 @@
 #include "GraphStoreProtocol.h"
 #include "engine/ExecuteUpdate.h"
 #include "engine/ExportQueryExecutionTrees.h"
+#include "engine/HttpError.h"
 #include "engine/QueryPlanner.h"
 #include "engine/SPARQLProtocol.h"
 #include "global/RuntimeParameters.h"
@@ -70,7 +71,7 @@ Server::Server(unsigned short port, size_t numThreads,
 }
 
 // __________________________________________________________________________
-void Server::initialize(const string& indexBaseName, bool useText,
+void Server::initialize(const std::string& indexBaseName, bool useText,
                         bool usePatterns, bool loadAllPermutations,
                         bool persistUpdates) {
   LOG(INFO) << "Initializing server ..." << std::endl;
@@ -93,8 +94,9 @@ void Server::initialize(const string& indexBaseName, bool useText,
 }
 
 // _____________________________________________________________________________
-void Server::run(const string& indexBaseName, bool useText, bool usePatterns,
-                 bool loadAllPermutations, bool persistUpdates) {
+void Server::run(const std::string& indexBaseName, bool useText,
+                 bool usePatterns, bool loadAllPermutations,
+                 bool persistUpdates) {
   using namespace ad_utility::httpUtils;
 
   // Function that handles a request asynchronously, will be passed as argument
@@ -131,16 +133,22 @@ void Server::run(const string& indexBaseName, bool useText, bool usePatterns,
     // response with that message. Note that the C++ standard forbids co_await
     // in the catch block, hence the workaround with the `exceptionErrorMsg`.
     std::optional<std::string> exceptionErrorMsg;
+    std::optional<boost::beast::http::status> httpResponseStatus;
     try {
       co_await process(request, sendWithAccessControlHeaders);
+    } catch (const HttpError& e) {
+      httpResponseStatus = e.status();
+      exceptionErrorMsg = e.what();
     } catch (const std::exception& e) {
       exceptionErrorMsg = e.what();
     }
-    if (exceptionErrorMsg) {
+    if (exceptionErrorMsg.has_value()) {
       LOG(ERROR) << exceptionErrorMsg.value() << std::endl;
-      auto badRequestResponse = createBadRequestResponse(
-          absl::StrCat(exceptionErrorMsg.value(), "\n"), request);
-      co_await sendWithAccessControlHeaders(std::move(badRequestResponse));
+      auto status =
+          httpResponseStatus.value_or(boost::beast::http::status::bad_request);
+      auto response = createHttpResponseFromString(
+          exceptionErrorMsg.value(), status, request, MediaType::textPlain);
+      co_return co_await sendWithAccessControlHeaders(std::move(response));
     }
   };
 
@@ -484,13 +492,13 @@ CPP_template_def(typename RequestT, typename ResponseT)(
         "SPARQL QUERY was request via the HTTP request, but the "
         "following update was sent instead of an query: ");
   };
-  auto visitUpdate = [&visitOperation, &requireValidAccessToken](
+  auto visitUpdate = [this, &visitOperation, &requireValidAccessToken](
                          Update update) -> Awaitable<void> {
     requireValidAccessToken("SPARQL Update");
     // We need to copy the update string because `visitOperation` below also
     // needs it.
-    auto parsedUpdates =
-        SparqlParser::parseUpdate(update.update_, update.datasetClauses_);
+    auto parsedUpdates = SparqlParser::parseUpdate(
+        index().getBlankNodeManager(), update.update_, update.datasetClauses_);
     return visitOperation(
         std::move(parsedUpdates), "SPARQL Update", std::move(update.update_),
         &ParsedQuery::hasUpdateClause,
@@ -583,8 +591,8 @@ Server::PlannedQuery Server::planQuery(
 }
 
 // _____________________________________________________________________________
-json Server::composeErrorResponseJson(
-    const string& query, const std::string& errorMsg,
+nlohmann::json Server::composeErrorResponseJson(
+    const std::string& query, const std::string& errorMsg,
     const ad_utility::Timer& requestTimer,
     const std::optional<ExceptionMetadata>& metadata) {
   json j;
@@ -610,7 +618,7 @@ json Server::composeErrorResponseJson(
 }
 
 // _____________________________________________________________________________
-json Server::composeStatsJson() const {
+nlohmann::json Server::composeStatsJson() const {
   json result;
   result["name-index"] = index_.getKbName();
   result["git-hash-index"] = index_.getGitShortHash();
@@ -744,8 +752,12 @@ CPP_template_def(typename RequestT)(
 
   if (mediaType.has_value()) {
     return {mediaType.value()};
-  } else {
+  }
+
+  try {
     return ad_utility::getMediaTypesFromAcceptHeader(acceptHeader);
+  } catch (const std::exception& e) {
+    throw HttpError(http::status::not_acceptable, e.what());
   }
 }
 
@@ -866,7 +878,7 @@ CPP_template_def(typename RequestT, typename ResponseT)(
   co_return;
 }
 
-json Server::createResponseMetadataForUpdate(
+nlohmann::json Server::createResponseMetadataForUpdate(
     const ad_utility::Timer& requestTimer, const Index& index,
     const DeltaTriples& deltaTriples, const PlannedQuery& plannedQuery,
     const QueryExecutionTree& qet, const DeltaTriplesCount& countBefore,
@@ -927,7 +939,7 @@ json Server::createResponseMetadataForUpdate(
   return response;
 }
 // ____________________________________________________________________________
-json Server::processUpdateImpl(
+nlohmann::json Server::processUpdateImpl(
     const PlannedQuery& plannedUpdate, const ad_utility::Timer& requestTimer,
     ad_utility::SharedCancellationHandle cancellationHandle,
     DeltaTriples& deltaTriples) {
@@ -1050,15 +1062,15 @@ CPP_template_def(typename VisitorT, typename RequestT, typename ResponseT)(
   std::optional<ExceptionMetadata> metadata;
   try {
     co_return co_await std::visit(visitor, std::move(operation));
+  } catch (const HttpError& e) {
+    responseStatus = e.status();
+    exceptionErrorMsg = e.what();
   } catch (const ParseException& e) {
     responseStatus = http::status::bad_request;
     exceptionErrorMsg = e.errorMessageWithoutPositionalInfo();
     metadata = e.metadata();
   } catch (const QueryAlreadyInUseError& e) {
     responseStatus = http::status::conflict;
-    exceptionErrorMsg = e.what();
-  } catch (const UnknownMediatypeError& e) {
-    responseStatus = http::status::bad_request;
     exceptionErrorMsg = e.what();
   } catch (const ad_utility::CancellationException& e) {
     // Send 429 status code to indicate that the time limit was reached

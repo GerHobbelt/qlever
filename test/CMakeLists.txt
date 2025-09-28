@@ -1,7 +1,7 @@
 include(GoogleTest)
 
 # Needed for creating the `testUil`-library.
-add_subdirectory(util)
+add_subdirectory(util EXCLUDE_FROM_ALL)
 
 # Link binary ${basename} against `gmock_main`, the threading library, the
 # general test utilities and all libraries that are specified as additional
@@ -121,6 +121,7 @@ add_subdirectory(engine)
 add_subdirectory(parser)
 add_subdirectory(index)
 add_subdirectory(backports)
+add_subdirectory(rdfTypes)
 
 addLinkAndDiscoverTest(ValueIdComparatorsTest util)
 
@@ -219,10 +220,6 @@ addLinkAndDiscoverTest(MinusTest engine)
 addAndLinkTest(SortPerformanceEstimatorTest SortPerformanceEstimator)
 #addLinkAndDiscoverTest(SortPerformanceEstimatorTest SortPerformanceEstimator)
 
-addLinkAndDiscoverTestSerial(SparqlAntlrParserTest parser sparqlExpressions engine)
-
-addLinkAndDiscoverTestSerial(SparqlAntlrParserExpressionTest parser sparqlExpressions engine)
-
 # The SerializerTest uses temporary files. The tests fail when multiple test
 # cases are run in parallel. This should be fixed by using distinct filenames
 # for each test case.
@@ -247,8 +244,6 @@ addLinkAndDiscoverTest(StreamableGeneratorTest)
 
 addLinkAndDiscoverTest(AcceptHeaderTest mediaTypes httpParser)
 
-addLinkAndDiscoverTest(RdfEscapingTest parser)
-
 addLinkAndDiscoverTestNoLibs(CompactStringVectorTest)
 
 addLinkAndDiscoverTest(SparqlDataTypesTest engine)
@@ -260,8 +255,6 @@ addLinkAndDiscoverTest(PrefixCompressorTest)
 
 addLinkAndDiscoverTest(VocabularyTest index)
 
-addLinkAndDiscoverTest(SplitVocabularyTest index)
-
 addLinkAndDiscoverTestNoLibs(IteratorTest)
 
 addLinkAndDiscoverTestNoLibs(ViewsTest)
@@ -270,7 +263,7 @@ addLinkAndDiscoverTest(ForwardTest)
 
 addLinkAndDiscoverTest(CompressorStreamTest engine)
 
-addLinkAndDiscoverTest(AsyncStreamTest)
+addLinkAndDiscoverTestNoLibs(AsyncStreamTest)
 
 addLinkAndDiscoverTest(BitUtilsTest)
 
@@ -390,7 +383,7 @@ addLinkAndDiscoverTest(CtreHelpersTest)
 
 addLinkAndDiscoverTest(ComparisonWithNanTest)
 
-addLinkAndDiscoverTest(ThreadSafeQueueTest)
+addLinkAndDiscoverTestNoLibs(ThreadSafeQueueTest)
 
 addLinkAndDiscoverTest(IdTableHelpersTest)
 
@@ -473,3 +466,5 @@ addLinkAndDiscoverTest(TripleSerializerTest)
 addLinkAndDiscoverTest(GeometryInfoTest util)
 
 addLinkAndDiscoverTestSerial(QueryRewriteUtilTest engine)
+
+addLinkAndDiscoverTestSerial(HttpErrorTest engine)
