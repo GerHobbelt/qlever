@@ -38,6 +38,8 @@ class TransitivePathTest
            std::optional<std::string> turtleInput = std::nullopt) {
     bool useBinSearch = std::get<0>(GetParam());
     auto qec = getQec(std::move(turtleInput));
+    // Clear the cache to avoid crosstalk between tests.
+    qec->clearCacheUnpinnedOnly();
     auto subtree = ad_utility::makeExecutionTree<ValuesForTesting>(
         qec, std::move(input), vars);
     return {TransitivePathBase::makeTransitivePath(
@@ -97,15 +99,16 @@ class TransitivePathTest
   static bool requestLaziness() { return std::get<1>(GetParam()); }
 
   // ___________________________________________________________________________
-  void assertResultMatchesIdTable(const Result& result, const IdTable& expected,
-                                  ad_utility::source_location loc =
-                                      ad_utility::source_location::current()) {
+  static void assertResultMatchesIdTable(
+      const Result& result, const IdTable& expected,
+      ad_utility::source_location loc =
+          ad_utility::source_location::current()) {
     auto t = generateLocationTrace(loc);
     using ::testing::UnorderedElementsAreArray;
     ASSERT_NE(result.isFullyMaterialized(), requestLaziness());
     if (requestLaziness()) {
       const auto& [idTable, localVocab] =
-          aggregateTables(std::move(result.idTables()), expected.numColumns());
+          aggregateTables(result.idTables(), expected.numColumns());
       EXPECT_THAT(idTable, UnorderedElementsAreArray(expected));
     } else {
       EXPECT_THAT(result.idTable(), UnorderedElementsAreArray(expected));
@@ -886,6 +889,11 @@ TEST_P(TransitivePathTest, literalsNotInIndexButInDeltaTriples) {
 
   // Simulate entries in the delta triples by using entries that are not in the
   // index
+  // Note: the entries in this local vocab are destroyed when this test is done.
+  // It is therefore crucial that the `makePath...` functions clear the cache,
+  // s.t. subsequent tests do not read results with a dangling local vocab from
+  // the cache (Currently the indexes used for testing are `static` which should
+  // be changed in the future).
   LocalVocab localVocab;
   auto id = Id::makeFromLocalVocabIndex(localVocab.getIndexAndAddIfNotContained(
       LocalVocabEntry{Literal::literalWithoutQuotes(literal)}));
@@ -1065,6 +1073,46 @@ TEST_P(TransitivePathTest, sameVariableResultsInDifferentCacheKey) {
       right2, 1, std::numeric_limits<size_t>::max());
 
   EXPECT_NE(T1->getCacheKey(), T2->getCacheKey());
+}
+
+// _____________________________________________________________________________
+TEST_P(TransitivePathTest, columnOriginatesFromGraphOrUndef) {
+  auto sub = makeIdTableFromVector({{0, 2}});
+
+  {
+    TransitivePathSide left(std::nullopt, 0, Variable{"?start"}, 0);
+    TransitivePathSide right(std::nullopt, 1, Variable{"?target"}, 1);
+    auto T = makePathBound(
+        false, sub.clone(), {Variable{"?internal1"}, Variable{"?internal2"}},
+        sub.clone(), 0, {Variable{"?start"}, Variable{"?other"}}, left, right,
+        0, std::numeric_limits<size_t>::max());
+
+    EXPECT_TRUE(T->columnOriginatesFromGraphOrUndef(Variable{"?start"}));
+    EXPECT_TRUE(T->columnOriginatesFromGraphOrUndef(Variable{"?target"}));
+    EXPECT_FALSE(T->columnOriginatesFromGraphOrUndef(Variable{"?other"}));
+    EXPECT_THROW(T->columnOriginatesFromGraphOrUndef(Variable{"?internal1"}),
+                 ad_utility::Exception);
+    EXPECT_THROW(T->columnOriginatesFromGraphOrUndef(Variable{"?internal2"}),
+                 ad_utility::Exception);
+    EXPECT_THROW(T->columnOriginatesFromGraphOrUndef(Variable{"?notExisting"}),
+                 ad_utility::Exception);
+  }
+
+  {
+    TransitivePathSide left(std::nullopt, 0, 1, 0);
+    TransitivePathSide right(std::nullopt, 1, Variable{"?target"}, 1);
+    auto T = makePathUnbound(
+        std::move(sub), {Variable{"?internal1"}, Variable{"?internal2"}}, left,
+        right, 0, std::numeric_limits<size_t>::max());
+
+    EXPECT_TRUE(T->columnOriginatesFromGraphOrUndef(Variable{"?target"}));
+    EXPECT_THROW(T->columnOriginatesFromGraphOrUndef(Variable{"?internal1"}),
+                 ad_utility::Exception);
+    EXPECT_THROW(T->columnOriginatesFromGraphOrUndef(Variable{"?internal2"}),
+                 ad_utility::Exception);
+    EXPECT_THROW(T->columnOriginatesFromGraphOrUndef(Variable{"?notExisting"}),
+                 ad_utility::Exception);
+  }
 }
 
 // _____________________________________________________________________________
