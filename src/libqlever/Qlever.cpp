@@ -22,11 +22,11 @@ Qlever::Qlever(const EngineConfig& config)
       enablePatternTrick_{!config.noPatterns_} {
   // Set runtime parameters relevant for caching and propagate them to the
   // cache.
-  RuntimeParameters().setOnUpdateAction<"cache-max-num-entries">(
+  globalRuntimeParameters.wlock()->cacheMaxNumEntries_.setOnUpdateAction(
       [this](size_t newValue) { cache_.setMaxNumEntries(newValue); });
-  RuntimeParameters().setOnUpdateAction<"cache-max-size">(
+  globalRuntimeParameters.wlock()->cacheMaxSize_.setOnUpdateAction(
       [this](ad_utility::MemorySize newValue) { cache_.setMaxSize(newValue); });
-  RuntimeParameters().setOnUpdateAction<"cache-max-size-single-entry">(
+  globalRuntimeParameters.wlock()->cacheMaxSizeSingleEntry_.setOnUpdateAction(
       [this](ad_utility::MemorySize newValue) {
         cache_.setMaxSizeSingleEntry(newValue);
       });
@@ -117,12 +117,21 @@ std::string Qlever::query(const QueryPlan& queryPlan,
   // TODO<joka921> For cancellation we have to call
   // `recursivelySetCancellationHandle` (see `Server::parseAndPlan`).
   auto handle = std::make_shared<ad_utility::CancellationHandle<>>();
+  std::string result;
+#ifndef QLEVER_REDUCED_FEATURE_SET_FOR_CPP17
   auto responseGenerator = ExportQueryExecutionTrees::computeResult(
       parsedQuery, *qet, mediaType, timer, std::move(handle));
-  std::string result;
   for (const auto& batch : responseGenerator) {
     result += batch;
   }
+#else
+  ad_utility::streams::StringBatcher yielder{
+      [&result](std::string_view batch) { result.append(batch); }};
+  ExportQueryExecutionTrees::computeResult(parsedQuery, *qet, mediaType, timer,
+                                           std::move(handle),
+                                           std::ref(yielder));
+
+#endif
   return result;
 }
 
