@@ -32,6 +32,7 @@
 #include "engine/IndexScan.h"
 #include "engine/Join.h"
 #include "engine/Load.h"
+#include "engine/MaterializedViews.h"
 #include "engine/Minus.h"
 #include "engine/MultiColumnJoin.h"
 #include "engine/NamedResultCache.h"
@@ -40,6 +41,7 @@
 #include "engine/OptionalJoin.h"
 #include "engine/OrderBy.h"
 #include "engine/PathSearch.h"
+#include "engine/PermutationSelector.h"
 #include "engine/QueryExecutionTree.h"
 #include "engine/QueryRewriteUtils.h"
 #include "engine/Service.h"
@@ -61,6 +63,7 @@
 #include "parser/Alias.h"
 #include "parser/GraphPatternOperation.h"
 #include "parser/MagicServiceIriConstants.h"
+#include "parser/MaterializedViewQuery.h"
 #include "parser/PayloadVariables.h"
 #include "parser/SparqlParserHelpers.h"
 #include "rdfTypes/Variable.h"
@@ -807,9 +810,11 @@ auto QueryPlanner::seedWithScansAndText(
       seeds.emplace_back(newIdPlan);
     }
     idShift++;
+    checkCancellation();
   }
 
   for (size_t i = 0; i < tg._nodeMap.size(); ++i) {
+    checkCancellation();
     const TripleGraph::Node& node = *tg._nodeMap.find(i)->second;
 
     auto pushPlan = [&seeds, i](SubtreePlan plan) {
@@ -863,6 +868,12 @@ auto QueryPlanner::seedWithScansAndText(
       continue;
     }
 
+    if (ql::starts_with(input, MATERIALIZED_VIEW_IRI_WITHOUT_CLOSING_BRACKET)) {
+      parsedQuery::MaterializedViewQuery config{node.triple_};
+      pushPlan(getMaterializedViewIndexScanPlan(config));
+      continue;
+    }
+
     if (input == HAS_PREDICATE_PREDICATE) {
       pushPlan(makeSubtreePlan<HasPredicateScan>(_qec, node.triple_));
       continue;
@@ -912,10 +923,15 @@ auto QueryPlanner::seedWithScansAndText(
         }
         additionalColumns.emplace_back(ADDITIONAL_COLUMN_GRAPH_ID,
                                        std::move(internalVariable));
+        checkCancellation();
       }
 
-      pushPlan(makeSubtreePlan<IndexScan>(_qec, permutation, std::move(triple),
-                                          relevantGraphs));
+      auto actualPermutation = qlever::getPermutationForTriple(
+          permutation, _qec->getIndex(), triple);
+
+      pushPlan(makeSubtreePlan<IndexScan>(_qec, std::move(actualPermutation),
+                                          _qec->locatedTriplesSharedState(),
+                                          std::move(triple), relevantGraphs));
     };
     seedFromOrdinaryTriple(node, addIndexScan, addFilter);
   }
@@ -932,6 +948,7 @@ auto QueryPlanner::seedWithScansAndText(
     textLimits.erase(var);
   }
 
+  checkCancellation();
   return result;
 }
 
@@ -1208,8 +1225,8 @@ std::vector<SubtreePlan> QueryPlanner::merge(
       for (auto& plan : createJoinCandidates(ai, bj, tg)) {
         candidates[getPruningKey(plan, plan._qet->resultSortedOn())]
             .emplace_back(std::move(plan));
+        checkCancellation();
       }
-      checkCancellation();
     }
   }
 
@@ -1379,6 +1396,7 @@ void QueryPlanner::applyFiltersIfPossible(
   for (auto& plan : row) {
     for (const auto& [i, filterAndSubst] :
          ::ranges::views::enumerate(filters)) {
+      checkCancellation();
       if (((plan._idsOfIncludedFilters >> i) & 1) != 0) {
         continue;
       }
@@ -1531,11 +1549,13 @@ QueryPlanner::runDynamicProgrammingOnConnectedComponent(
     // As we only passed in connected components, we expect the result to always
     // be nonempty.
     AD_CORRECTNESS_CHECK(!dpTab[k - 1].empty());
+    checkCancellation();
   }
   auto& result = dpTab.back();
   applyFiltersIfPossible<FilterMode::ReplaceUnfilteredNoSubstitutes>(result,
                                                                      filters);
   applyTextLimitsIfPossible(result, textLimits, true);
+  checkCancellation();
   return std::move(result);
 }
 
@@ -2100,6 +2120,7 @@ void QueryPlanner::setEnablePatternTrick(bool enablePatternTrick) {
 size_t QueryPlanner::findCheapestExecutionTree(
     const std::vector<SubtreePlan>& lastRow) const {
   AD_CONTRACT_CHECK(!lastRow.empty());
+  checkCancellation();
   auto compare = [this](const auto& a, const auto& b) {
     auto aCost = a.getCostEstimate(), bCost = b.getCostEstimate();
     if (aCost == bCost && isInTestMode()) {
@@ -2151,6 +2172,7 @@ std::vector<SubtreePlan> QueryPlanner::createJoinCandidatesAllowEmpty(
 std::vector<SubtreePlan> QueryPlanner::createJoinCandidates(
     const SubtreePlan& ain, const SubtreePlan& bin,
     const JoinColumns& jcs) const {
+  checkCancellation();
   bool swapForTesting = isInTestMode() && bin.type != SubtreePlan::OPTIONAL &&
                         ain._qet->getCacheKey() < bin._qet->getCacheKey();
   const auto& a = !swapForTesting ? ain : bin;
@@ -2920,6 +2942,7 @@ void QueryPlanner::GraphPatternPlanner::visitGroupOptionalOrMinus(
 template <typename Arg>
 void QueryPlanner::GraphPatternPlanner::graphPatternOperationVisitor(Arg& arg) {
   using T = std::decay_t<Arg>;
+  planner_.checkCancellation();
   if constexpr (std::is_same_v<T, p::Optional> ||
                 std::is_same_v<T, p::GroupGraphPattern>) {
     // If this is a `GRAPH <graph> {...}` clause, then we have to overwrite the
@@ -3010,6 +3033,8 @@ void QueryPlanner::GraphPatternPlanner::graphPatternOperationVisitor(Arg& arg) {
     visitTextSearch(arg);
   } else if constexpr (std::is_same_v<T, p::NamedCachedResult>) {
     visitNamedCachedResult(arg);
+  } else if constexpr (std::is_same_v<T, p::MaterializedViewQuery>) {
+    visitMaterializedViewQuery(arg);
   } else {
     static_assert(std::is_same_v<T, p::BasicGraphPattern>);
     visitBasicGraphPattern(arg);
@@ -3051,6 +3076,7 @@ void QueryPlanner::GraphPatternPlanner::visitBasicGraphPattern(
       ql::ranges::move(children._filters,
                        std::back_inserter(rootPattern_->_filters));
     }
+    planner_.checkCancellation();
   }
 }
 
@@ -3138,6 +3164,20 @@ void QueryPlanner::GraphPatternPlanner::visitPathSearch(
     candidatesOut.push_back(std::move(plan));
   }
   visitGroupOptionalOrMinus(std::move(candidatesOut));
+}
+
+// _______________________________________________________________
+SubtreePlan QueryPlanner::getMaterializedViewIndexScanPlan(
+    const parsedQuery::MaterializedViewQuery& viewQuery) {
+  return makeSubtreePlan<IndexScan>(
+      _qec->materializedViewsManager().makeIndexScan(_qec, viewQuery));
+}
+
+// _______________________________________________________________
+void QueryPlanner::GraphPatternPlanner::visitMaterializedViewQuery(
+    const parsedQuery::MaterializedViewQuery& viewQuery) {
+  candidatePlans_.push_back(
+      {planner_.getMaterializedViewIndexScanPlan(viewQuery)});
 }
 
 // _______________________________________________________________
