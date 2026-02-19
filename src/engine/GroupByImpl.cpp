@@ -33,6 +33,10 @@
 #include "util/Timer.h"
 
 namespace groupBy::detail {
+
+template <typename T>
+CPP_requires(HasResize, requires(T& val)(val.resize(std::declval<size_t>())));
+
 template <size_t IN_WIDTH, size_t OUT_WIDTH>
 class LazyGroupByRange
     : public ad_utility::InputRangeFromGet<Result::IdTableVocabPair> {
@@ -164,8 +168,9 @@ class LazyGroupByRange
       currentLocalVocab_.mergeWith(storedLocalVocabs_);
       auto result = Result::IdTableVocabPair{std::move(resultTable_),
                                              std::move(currentLocalVocab_)};
-      // Keep last local vocab for next commit.
-      currentLocalVocab_ = std::move(storedLocalVocabs_.back());
+      // Keep last local vocab for next commit, since we might write to
+      // `currentLocalVocab_`, we need to clone it.
+      currentLocalVocab_ = storedLocalVocabs_.back().clone();
       storedLocalVocabs_.clear();
 
       return LoopControl::yieldValue(std::move(result));
@@ -749,10 +754,11 @@ std::optional<IdTable> GroupByImpl::computeGroupByForSingleIndexScan() const {
   }
 
   // Distinct counts are only supported for triples with three variables without
-  // a GRAPH variable.
+  // a GRAPH variable and if no `LIMIT`/`OFFSET` clauses are present.
   bool countIsDistinct = varAndDistinctness.value().isDistinct_;
   if (countIsDistinct && (indexScan->numVariables() != 3 ||
-                          !indexScan->additionalVariables().empty())) {
+                          !indexScan->additionalVariables().empty() ||
+                          !indexScan->getLimitOffset().isUnconstrained())) {
     return std::nullopt;
   }
 
@@ -770,10 +776,14 @@ std::optional<IdTable> GroupByImpl::computeGroupByForSingleIndexScan() const {
       table(0, 0) = Id::makeFromInt(
           getIndex().getImpl().numDistinctCol0(permutation.value()).normal);
     } else {
-      table(0, 0) = Id::makeFromInt(getIndex().numTriples().normal);
+      const auto& limitOffset = indexScan->getLimitOffset();
+      table(0, 0) = Id::makeFromInt(
+          limitOffset.actualSize(getIndex().numTriples().normal));
     }
   } else {
-    table(0, 0) = Id::makeFromInt(indexScan->getExactSize());
+    const auto& limitOffset = indexScan->getLimitOffset();
+    table(0, 0) =
+        Id::makeFromInt(limitOffset.actualSize(indexScan->getExactSize()));
   }
   return table;
 }
@@ -823,7 +833,9 @@ std::optional<IdTable> GroupByImpl::computeGroupByObjectWithCount() const {
       getExecutionContext()->getIndex().getPimpl().getPermutation(
           indexScan->permutation());
   auto result = permutation.getDistinctCol1IdsAndCounts(
-      col0Id.value(), cancellationHandle_, locatedTriplesSnapshot());
+      col0Id.value(), cancellationHandle_, locatedTriplesSnapshot(),
+      indexScan->getLimitOffset());
+
   indexScan->updateRuntimeInformationWhenOptimizedOut(
       {}, RuntimeInformation::Status::optimizedOut);
 
@@ -874,13 +886,15 @@ std::optional<IdTable> GroupByImpl::computeGroupByForFullIndexScan() const {
         "not supported."};
   }
 
-  _subtree->getRootOperation()->updateRuntimeInformationWhenOptimizedOut({});
+  const auto& indexScan = _subtree->getRootOperation();
+  indexScan->updateRuntimeInformationWhenOptimizedOut({});
 
   const auto& permutation =
       getExecutionContext()->getIndex().getPimpl().getPermutation(
           permutationEnum.value());
   auto table = permutation.getDistinctCol0IdsAndCounts(
-      cancellationHandle_, locatedTriplesSnapshot());
+      cancellationHandle_, locatedTriplesSnapshot(),
+      indexScan->getLimitOffset());
   if (numCounts == 0) {
     table.setColumnSubset({{0}});
   } else if (!variableIsBoundInSubtree) {
@@ -973,7 +987,7 @@ GroupByImpl::checkIfJoinWithFullScan(const Join& join) const {
 // ____________________________________________________________________________
 std::optional<IdTable> GroupByImpl::computeGroupByForJoinWithFullScan() const {
   auto join = std::dynamic_pointer_cast<Join>(_subtree->getRootOperation());
-  if (!join) {
+  if (!join || !join->getLimitOffset().isUnconstrained()) {
     return std::nullopt;
   }
 
@@ -1261,7 +1275,7 @@ void GroupByImpl::extractValues(
 
 // _____________________________________________________________________________
 static constexpr auto resizeIfVector = [](auto& val, size_t size) {
-  if constexpr (requires { val.resize(size); }) {
+  if constexpr (CPP_requires_ref(groupBy::detail::HasResize, decltype(val))) {
     val.resize(size);
   }
 };
@@ -1398,8 +1412,8 @@ GroupByImpl::HashMapAggregationData<NUM_GROUP_COLUMNS>::getHashEntries(
       T & arg, size_t numberOfGroups,
       [[maybe_unused]] const HashMapAggregateTypeWithData& info)(
       requires true) {
-    if constexpr (std::same_as<typename T::value_type,
-                               GroupConcatAggregationData>) {
+    if constexpr (ql::concepts::same_as<typename T::value_type,
+                                        GroupConcatAggregationData>) {
       arg.resize(numberOfGroups,
                  GroupConcatAggregationData{info.separator_.value()});
     } else {

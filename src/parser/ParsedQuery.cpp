@@ -3,7 +3,7 @@
 // Authors: Björn Buchhold <buchhold@cs.uni-freiburg.de> [2014 - 2017]
 //          Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
 
-#include "ParsedQuery.h"
+#include "parser/ParsedQuery.h"
 
 #include <absl/strings/str_join.h>
 #include <absl/strings/str_split.h>
@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "backports/StartsWithAndEndsWith.h"
 #include "engine/sparqlExpressions/SparqlExpressionPimpl.h"
 #include "global/RuntimeParameters.h"
 #include "parser/sparqlParser/SparqlQleverVisitor.h"
@@ -240,7 +241,8 @@ void ParsedQuery::addSolutionModifiers(
 
 // _____________________________________________________________________________
 const std::vector<Variable>& ParsedQuery::getVisibleVariables() const {
-  return std::visit(&parsedQuery::ClauseBase::getVisibleVariables, _clause);
+  return std::visit(std::mem_fn(&parsedQuery::ClauseBase::getVisibleVariables),
+                    _clause);
 }
 
 // _____________________________________________________________________________
@@ -254,7 +256,7 @@ void ParsedQuery::registerVariablesVisibleInQueryBody(
 // _____________________________________________________________________________
 void ParsedQuery::registerVariableVisibleInQueryBody(const Variable& variable) {
   auto addVariable = [&variable](auto& clause) {
-    if (!variable.name().starts_with(QLEVER_INTERNAL_VARIABLE_PREFIX)) {
+    if (!ql::starts_with(variable.name(), QLEVER_INTERNAL_VARIABLE_PREFIX)) {
       clause.addVisibleVariable(variable);
     }
   };
@@ -286,7 +288,8 @@ bool ParsedQuery::GraphPattern::addLanguageFilter(const Variable& variable,
     for (auto& triple : basicPattern->_triples) {
       auto predicate = triple.getSimplePredicate();
       if (triple.o_ == variable && predicate.has_value() &&
-          !predicate.value().starts_with(
+          !ql::starts_with(
+              predicate.value(),
               QLEVER_INTERNAL_PREFIX_IRI_WITHOUT_CLOSING_BRACKET)) {
         matchingTriples.push_back(&triple);
       }
@@ -458,9 +461,9 @@ void ParsedQuery::addHavingClause(
         " and also not bound inside the SELECT clause");
     auto newVariable = addInternalAlias(std::move(havingClause.expression_),
                                         internalVariableGenerator);
-    _havingClauses.emplace_back(
-        sparqlExpression::SparqlExpressionPimpl::makeVariableExpression(
-            newVariable));
+    _havingClauses.push_back(
+        {sparqlExpression::SparqlExpressionPimpl::makeVariableExpression(
+            newVariable)});
   }
 }
 

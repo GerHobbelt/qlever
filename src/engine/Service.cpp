@@ -9,6 +9,7 @@
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
 
+#include "backports/StartsWithAndEndsWith.h"
 #include "engine/CallFixedSize.h"
 #include "engine/ExportQueryExecutionTrees.h"
 #include "engine/Sort.h"
@@ -21,6 +22,11 @@
 #include "util/HashSet.h"
 #include "util/StringUtils.h"
 #include "util/http/HttpUtils.h"
+
+namespace {
+// CTRE regex patterns for C++17 compatibility
+constexpr ctll::fixed_string selectPatternRegex = "[ \t\r\n]*SELECT";
+}  // namespace
 
 // ____________________________________________________________________________
 Service::Service(QueryExecutionContext* qec,
@@ -97,7 +103,7 @@ std::string Service::pushDownValues(std::string_view pattern,
   pattern.remove_prefix(index + 1);
   // If we have a single subquery in the service clause, wrap it inside curly
   // braces so it remains valid syntax alongside a VALUES clause.
-  if (ctre::starts_with<"[ \t\r\n]*SELECT">(pattern)) {
+  if (ctre::starts_with<selectPatternRegex>(pattern)) {
     return absl::StrCat("{\n", values, "\n{", pattern, "\n}");
   }
   return absl::StrCat("{\n", values, "\n", pattern);
@@ -172,8 +178,8 @@ Result Service::computeResultImpl(bool requestLaziness) {
         static_cast<int>(response.status_), ", ",
         toStd(boost::beast::http::obsolete_reason(response.status_))));
   }
-  if (!ad_utility::utf8ToLower(response.contentType_)
-           .starts_with("application/sparql-results+json")) {
+  if (!ql::starts_with(ad_utility::utf8ToLower(response.contentType_),
+                       "application/sparql-results+json")) {
     throwErrorWithContext(absl::StrCat(
         "QLever requires the endpoint of a SERVICE to send the result as "
         "'application/sparql-results+json' but the endpoint sent '",
@@ -282,8 +288,10 @@ Result::LazyResult Service::computeResultLazily(
           varsChecked = true;
         }
 
-        CALL_FIXED_SIZE(service->getResultWidth(), &Service::writeJsonResult,
-                        service, vars, partJson, &idTable, &localVocab, rowIdx);
+        ad_utility::callFixedSizeVi(service->getResultWidth(), [&](auto width) {
+          return service->writeJsonResult<width>(vars, partJson, &idTable,
+                                                 &localVocab, rowIdx);
+        });
         resultExists = true;
         if (!singleIdTable) {
           Result::IdTableVocabPair pair{std::move(idTable),
@@ -526,7 +534,7 @@ std::optional<std::string> Service::idToValueForValuesClause(
     default:
       if (xsdType) {
         return absl::StrCat("\"", value, "\"^^<", xsdType, ">");
-      } else if (value.starts_with('<')) {
+      } else if (ql::starts_with(value, '<')) {
         return value;
       } else {
         return RdfEscaping::validRDFLiteralFromNormalized(value);
