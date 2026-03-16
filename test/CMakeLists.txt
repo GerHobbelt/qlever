@@ -138,7 +138,7 @@ if (NOT _DISABLE_EMSCRIPTEN_PROBLEMATIC_TESTS)
 
     addLinkAndDiscoverTest(UrlParserTest)
 
-    addLinkAndDiscoverTest(GraphStoreProtocolTest engine)
+    addLinkAndDiscoverTest(GraphStoreProtocolTest engine server)
 
     addLinkAndDiscoverTest(ParsedRequestBuilderTest engine)
 
@@ -179,7 +179,7 @@ addLinkAndDiscoverTestSerial(IdTripleTest index)
 
 addLinkAndDiscoverTestSerial(DeltaTriplesTest index)
 
-addLinkAndDiscoverTest(DeltaTriplesCountTest index)
+addLinkAndDiscoverTest(UpdateMetadataTest index)
 
 addLinkAndDiscoverTest(EngineTest engine)
 
@@ -192,6 +192,8 @@ addLinkAndDiscoverTestSerial(QueryPlannerTest engine)
 addLinkAndDiscoverTestSerial(QueryPlannerSpatialJoinTest engine)
 
 addLinkAndDiscoverTestNoLibs(HashMapTest)
+
+addLinkAndDiscoverTestNoLibs(StringPairHashMapTest)
 
 addLinkAndDiscoverTest(HashSetTest)
 
@@ -263,6 +265,8 @@ addLinkAndDiscoverTest(SetOfIntervalsTest sparqlExpressions)
 addLinkAndDiscoverTestNoLibs(TypeTraitsTest)
 
 addLinkAndDiscoverTestSerial(SparqlExpressionTest sparqlExpressions index engine)
+
+addLinkAndDiscoverTestSerial(SparqlExpressionMemberFunctionsTest sparqlExpressions index engine)
 
 addLinkAndDiscoverTest(StreamableBodyTest http)
 
@@ -472,6 +476,8 @@ addLinkAndDiscoverTest(ValueGetterTest engine)
 
 addLinkAndDiscoverTest(LruCacheTest)
 
+addLinkAndDiscoverTest(LruCacheWithStatisticsTest)
+
 addLinkAndDiscoverTestNoLibs(InputRangeUtilsTest)
 
 addLinkAndDiscoverTest(TripleSerializerTest)
@@ -493,3 +499,8 @@ addLinkAndDiscoverTest(MaterializedViewsTest qlever engine server)
 addLinkAndDiscoverTestNoLibs(ConstexprMapTest)
 
 addLinkAndDiscoverTestNoLibs(ParallelExecutorTest)
+
+addLinkAndDiscoverTestNoLibs(VariantRangeFilterTest)
+
+addLinkAndDiscoverTest(ConstructTemplatePreprocessorTest engine)
+
